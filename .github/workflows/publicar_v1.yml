@@ -1,0 +1,28 @@
+name: Publicar versión 1.0
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publicar_v1.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: github.repository == 'srwindows/StemMIDI-Studio'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Crear etiqueta y publicación de v1.0 si aún no existen
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view v1.0 >/dev/null 2>&1; then
+            echo 'La versión v1.0 ya está publicada.'
+            exit 0
+          fi
+          gh release create v1.0 --target "$GITHUB_SHA" \
+            --title 'StemMIDI Studio v1.0' \
+            --notes 'Primera publicación del código fuente (149 archivos, 54 pruebas). Monitor y grabación, separación de audio con IA opcional, audio a MIDI, mezclador, Piano Roll y estudio vocal. Licencia PolyForm Noncommercial 1.0.0. No se incluyen grabaciones ni modelos de terceros. Las compilaciones Windows/macOS no están validadas.'
