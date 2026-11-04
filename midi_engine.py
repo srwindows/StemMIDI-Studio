@@ -535,6 +535,14 @@ def _handle(opts, originals, outdir, scratch):
         opts["grid_offset_ms"]=round(offset*1000)
         emit("info",message=f"Rejilla ajustada al pulso: {opts['grid_offset_ms']} ms")
     model = None
+    chosen_model=opts.get("basic_pitch_model")
+    if chosen_model:
+        from midi_model_options import registered
+        if not registered(chosen_model):
+            raise ValueError("Modelo de transcripción MIDI externo no registrado o ausente.")
+        chosen_model=Path(chosen_model).resolve()
+    else:
+        chosen_model=ICASSP_2022_MODEL_PATH
     report = []
     source_rms = None
     if should_split:
@@ -572,7 +580,7 @@ def _handle(opts, originals, outdir, scratch):
             except Exception as exc:
                 emit("info", message=f"El motor de piano no produjo resultado: {exc}. Probando Basic Pitch.")
                 if model is None:
-                    model = Model(ICASSP_2022_MODEL_PATH)
+                    model = Model(chosen_model)
                 threshold, frame, minlength, lo, hi = profile_settings(kind, opts)
                 effective={"onset":round(threshold,3),"frame":round(frame,3),
                            "min_length_ms":int(minlength),
@@ -598,8 +606,9 @@ def _handle(opts, originals, outdir, scratch):
                 emit("refinement",name=name,**qa)
         else:
             if model is None:
-                emit("loading_model", message="Cargando el modelo ONNX Basic Pitch…")
-                model = Model(ICASSP_2022_MODEL_PATH)
+                emit("loading_model", message="Cargando el modelo ONNX seleccionado: "
+                     +Path(chosen_model).name)
+                model = Model(chosen_model)
             threshold,frame,minlength,lo,hi=profile_settings(kind,opts)
             effective={"onset":round(threshold,3),"frame":round(frame,3),
                        "min_length_ms":int(minlength),
@@ -620,7 +629,8 @@ def _handle(opts, originals, outdir, scratch):
             notes=clean_events(events,float(minlength)*.6 if qa["splits"] else float(minlength),
                                lo,hi,bpm,opts.get("quantize","off"),
                                **note_filter_options(opts,attacks))
-            method="Basic Pitch ONNX · ataques refinados" if qa["splits"] else "Basic Pitch ONNX"
+            method=("Basic Pitch ONNX · "+Path(chosen_model).stem+
+                    (" · ataques refinados" if qa["splits"] else ""))
             refine_report=qa
             emit("refinement",name=name,**qa)
         if not is_drums and notes:
@@ -641,6 +651,7 @@ def _handle(opts, originals, outdir, scratch):
     metadata={"version":2,"midi":str(output),"bpm":round(bpm,3),"quantize":opts.get("quantize","off"),
               "automatic":opts.get("automatic",True),"notes":count,"tracks":report,
               "tempo_analysis":tempo_analysis,
+              "basic_pitch_model":str(chosen_model),
               "algorithm_parameters":{name:opts.get(name) for name in
                   ("precision_profile","onset","frame","min_length_ms","min_pitch",
                    "max_pitch","min_velocity","merge_gap_ms","note_shift_ms",

@@ -55,6 +55,7 @@ def valid_drum_results(folder:Path):
 
 class DrumModule(QWidget):
     resultsChanged=Signal()
+    progressChanged=Signal()  # El cálculo del motor es COMÚN a las seis salidas.
     def __init__(self,main,workbench):
         super().__init__(main)
         self.main=main
@@ -65,6 +66,12 @@ class DrumModule(QWidget):
         self._current_output=None
         self._normalization_output=None
         self._original_input=None
+        self.engine_percent=0
+        self.engine_progress_known=False
+        self._engine_progress_tail=""
+        self._progress_processing=False
+        self._engine_verified=False
+        self._cancel_requested=False
         self.setObjectName("drumModule")
         lay=QVBoxLayout(self)
         lay.setContentsMargins(11,7,11,7)
@@ -241,6 +248,8 @@ class DrumModule(QWidget):
         lay.insertWidget(lay.indexOf(self.studio),self.full_presets)
         self.studio.results_layout.addWidget(self.result_table,1)
         self.preview=PreviewPlayer("ESCUCHAR ELEMENTO SELECCIONADO",self)
+        self.preview.setMinimumHeight(68)
+        self.preview.slider.setMinimumHeight(14)
         lay.addWidget(self.preview)
         bottom=QHBoxLayout()
         for text,callback in (
@@ -514,6 +523,18 @@ class DrumModule(QWidget):
         self.process.finished.connect(self._finished)
         self.process.errorOccurred.connect(self._failed)
         self.process.readyReadStandardOutput.connect(self._log)
+        from engine_task_indicator import EngineTaskIndicator
+        if getattr(self,"_engine_indicator",None) is None:
+            self._engine_indicator=EngineTaskIndicator(self,
+                "Desglose / preparación de batería",
+                phases=2 if operation=="normalize" else 1)
+        if operation in ("normalize","separate"):
+            self._engine_indicator.enable_engine_percent()
+        self._engine_indicator.set_cancel_callback(self.cancel)
+        self._engine_indicator.attach(self.process,
+            "Preparando audio FLAC" if operation=="normalize"
+            else "Separando batería" if operation=="separate"
+            else "Instalando modelo")
         self.process.start(str(command[0]),[str(x) for x in command[1:]])
         self._busy(True)
         return True
@@ -527,9 +548,31 @@ class DrumModule(QWidget):
             return False
         return self._start_process_command([engine,*arguments],operation)
 
+    def _accept_engine_output(self,output):
+        """Leer únicamente porcentajes explícitos emitidos por audio-separator.
+
+        No inferir progreso a partir de segundos, tamaño de archivo, mensajes
+        de normalización o número de barras visibles.
+        """
+        if self._operation!="separate":return
+        from separation_pro_controls import extract_engine_percent
+        combined=self._engine_progress_tail+str(output)
+        self._engine_progress_tail=combined[-180:]
+        values=extract_engine_percent(combined)
+        if not values:return
+        raw=max(values)
+        value=max(self.engine_percent,min(99,raw))
+        if value!=self.engine_percent or not self.engine_progress_known:
+            self.engine_percent=value
+            self.engine_progress_known=True
+            if getattr(self,"_engine_indicator",None) is not None:
+                self._engine_indicator.report_engine_percent(value)
+            self.progressChanged.emit()
+
     def _log(self):
         if not self.process:return
         output=bytes(self.process.readAllStandardOutput()).decode("utf-8","replace")
+        self._accept_engine_output(output)
         lines=[x.strip() for x in output.replace("\r","\n").splitlines() if x.strip()]
         if lines:
             self.status.setText(lines[-1][:250])
@@ -601,12 +644,24 @@ class DrumModule(QWidget):
         except OSError as exc:
             QMessageBox.warning(self,"No se puede crear la tarea",str(exc))
             return
+        from uuid import uuid4
+        # Cada operación procesa en una subcarpeta nueva y privada.
+        # Una cancelación nunca toca las seis pistas anteriores.
+        output=output/("toma_mdx23c_"+uuid4().hex[:12])
+        output.mkdir(parents=True,exist_ok=False)
         self._current_output=output
         self._original_input=info["path"]
         stem=("entrada_bateria_"+str(len(self.storage.items)+1)
                if layout_active(getattr(self.main,"project_dir",None))
                and self.storage.items else "entrada_bateria")
         self._normalization_output=normal_folder/(stem+".flac")
+        self.engine_percent=0
+        self.engine_progress_known=False
+        self._engine_progress_tail=""
+        self._engine_verified=False
+        self._cancel_requested=False
+        self._progress_processing=True
+        self.progressChanged.emit()
         self.status.setText("Preparando audio · FLAC 24 bits, estéreo, 44,1 kHz…")
         command=normalize_command(source,self._normalization_output)
         # QProcess ejecuta la conversión en segundo plano; no bloquea Qt.
@@ -629,7 +684,9 @@ class DrumModule(QWidget):
         self.process=None
         self._operation=None
         self._busy(False)
-        if code!=0 or status!=QProcess.NormalExit:
+        if self._cancel_requested:
+            self.status.setText("Operación cancelada. No se publicaron resultados incompletos.")
+        elif code!=0 or status!=QProcess.NormalExit:
             self.status.setText(
                 "Error preparando el audio." if operation=="normalize" else
                 "Separación incompleta o fallida. "
@@ -640,6 +697,8 @@ class DrumModule(QWidget):
                 self.status.setText("No se pudo convertir el audio a FLAC.")
             else:
                 self.status.setText("Audio preparado. Desglosando seis elementos reales…")
+                if getattr(self,"_engine_indicator",None) is not None:
+                    self._engine_indicator.stage("Audio normalizado y verificado")
                 args=[str(path),"--model_filename",self.model_filename(),
                       "--model_file_dir",str(self.model_dir()),
                       "--output_dir",str(self._current_output),
@@ -651,8 +710,13 @@ class DrumModule(QWidget):
                                 "No se ha podido verificar la descarga del modelo.")
         elif operation=="separate":
             try:
-                valid_drum_results(self._current_output)
+                verified=valid_drum_results(self._current_output)
                 self.storage.set_separation(self._current_output)
+                self._engine_verified=bool(verified)
+                if self._engine_verified:
+                    self.engine_percent=100
+                    self.engine_progress_known=True
+                    self.progressChanged.emit()
                 self.status.setText(
                     f"Separación terminada: {len(self.storage.items)} archivos reales. "
                     "Elige qué pistas deseas guardar.")
@@ -663,7 +727,17 @@ class DrumModule(QWidget):
         # El FLAC convertido solo es material de trabajo. Retirarlo una
         # vez terminada (o fallida) la separación evita acumular gigabytes
         # de copias normalizadas dentro de los proyectos.
-        if operation!="normalize" or code!=0 or status!=QProcess.NormalExit:
+        if self._cancel_requested and self._current_output:
+            from task_staging import inside
+            import shutil
+            if (self._current_output.is_dir()
+                    and inside(self._current_output,self.storage.root)):
+                try:
+                    shutil.rmtree(self._current_output)
+                except OSError as error:
+                    self.status.setText(
+                        "Cancelado, pero no se pudo limpiar el temporal: "+str(error))
+        if operation!="normalize" or code!=0 or status!=QProcess.NormalExit or self._cancel_requested:
             from task_staging import inside
             temporary=self._normalization_output
             if temporary and inside(temporary,self.storage.root):
@@ -673,12 +747,27 @@ class DrumModule(QWidget):
                 except OSError:
                     pass
             self._normalization_output=None
+        # La normalización aprobada continúa directamente con el
+        # siguiente QProcess: el indicador permanece abierto.
+        if self.process is None and getattr(self,"_engine_indicator",None):
+            if operation in ("normalize","separate"):
+                self._progress_processing=False
+                self.progressChanged.emit()
+            valid=(not self._cancel_requested and code==0 and status==QProcess.NormalExit and
+                   (operation=="install" and self.model_ready() or
+                    operation=="separate" and
+                    getattr(self,"_engine_verified",False)))
+            self._engine_indicator.finish(bool(valid),self.status.text())
+            self._engine_indicator=None
+            self._engine_verified=False
         process.deleteLater()
 
     def cancel(self):
         if self.process is None:return
-        self.process.kill()
-        self.status.setText("Procesamiento detenido; los resultados anteriores no se han eliminado.")
+        self._cancel_requested=True
+        self.status.setText("Cancelando el motor… Las pistas anteriores permanecen intactas.")
+        if self.process.state()!=QProcess.NotRunning:
+            self.process.kill()
 
     def refresh_results(self):
         paths=[p for p in self.storage.items if Path(p).is_file()]
@@ -741,7 +830,7 @@ class DrumModule(QWidget):
             QMessageBox.Yes|QMessageBox.No,QMessageBox.No)
         if answer!=QMessageBox.Yes:return
         self.preview.clear()
-        self.storage.discard()
+        self.storage.discard(parent=self)
         self.refresh_results()
         if hasattr(self,"studio"):
             self.studio.apply_mix_preset({p:{"gain":0,"pan":0,"mute":False,"solo":False}

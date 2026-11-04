@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
     QFileSystemModel, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton,
-    QSizePolicy, QSplitter, QTreeView, QVBoxLayout, QWidget
+    QSizePolicy, QSplitter, QTreeView, QVBoxLayout, QWidget, QMenu
 )
 
 BROWSER_STYLE = """
@@ -321,6 +321,8 @@ class StemFileBrowser(QDialog):
                                    self.kind=="multi" else QAbstractItemView.SingleSelection)
         self.view.doubleClicked.connect(self.open_index)
         self.view.clicked.connect(self.select_index)
+        self.view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.view.customContextMenuRequested.connect(self._context_menu)
         self.view.selectionModel().selectionChanged.connect(
             lambda *_:self._update_info())
         fp.addWidget(self.view,1)
@@ -394,7 +396,7 @@ class StemFileBrowser(QDialog):
             ("↓  Descargas",Path.home()/"Descargas"),
             ("♫  Música",Path.home()/"Música"),
             ("▸  Vídeos",Path.home()/"Vídeos"),
-            ("◧  Recuperación",Path("/media/javi/Recuperacion")),
+            ("◧  Archivos personales",Path.home()),
             ("▣  Dispositivos",Path("/media")),
             ("⚙  Sistema de archivos",Path("/")),
         ]
@@ -568,6 +570,22 @@ class StemFileBrowser(QDialog):
                 summary=f"{size / (1024**2):.2f} MiB"
             self.info.setText(f"{path.name} · {summary}")
         except OSError:self.info.setText(path.name)
+
+    def _context_menu(self,position):
+        index=self.view.indexAt(position)
+        if not index.isValid():return
+        selected=self._selected_rows()
+        target=self._path_for(index)
+        if target not in selected:selected=[target]
+        menu=QMenu(self.view)
+        delete=menu.addAction("Eliminar archivo(s)… · enviar a la papelera")
+        delete.setEnabled(bool(selected) and all(p.is_file() for p in selected))
+        chosen=menu.exec(self.view.viewport().mapToGlobal(position))
+        if chosen is delete:
+            from safe_file_delete import trash_files
+            if trash_files(self,selected):
+                self.refresh_folder()
+                self._update_info()
 
     def create_folder(self):
         base=self._dir()

@@ -5,7 +5,7 @@ mono y escucha por canal se ejecutan en ffplay, sin alterar el original.
 """
 from __future__ import annotations
 from pathlib import Path
-from PySide6.QtCore import Qt,QObject,QTimer
+from PySide6.QtCore import Qt,QObject,QTimer,QEvent
 from PySide6.QtWidgets import (
     QWidget,QLabel,QHBoxLayout,QVBoxLayout,QGridLayout,
     QPushButton,QComboBox,QProgressBar,QSizePolicy,QPlainTextEdit
@@ -29,7 +29,17 @@ def reflow_player(player, original=False):
     if title:title.hide()
     player.filename.setMaximumHeight(32)
     player.filename.setWordWrap(False)
-    outer.addWidget(player.filename)
+    # Full audio options stay accessible behind an inline dropdown when
+    # the screen is too narrow; never squash the volume or device combos.
+    title_row=QHBoxLayout()
+    title_row.setContentsMargins(0,0,0,0)
+    title_row.setSpacing(4)
+    title_row.addWidget(player.filename,1)
+    player.options_button.setText("Opciones ▾")
+    player.options_button.setMinimumWidth(0)
+    player.options_button.setMaximumWidth(90)
+    title_row.addWidget(player.options_button)
+    outer.addLayout(title_row)
     transport=QHBoxLayout()
     transport.setContentsMargins(0,0,0,0)
     transport.setSpacing(5)
@@ -61,7 +71,11 @@ def reflow_player(player, original=False):
         mode.currentIndexChanged.connect(on_mode)
         settings.addWidget(label)
         settings.addWidget(mode)
-    outer.addLayout(settings)
+    extras_panel=QWidget(player)
+    extras_box=QVBoxLayout(extras_panel)
+    extras_box.setContentsMargins(0,0,0,0)
+    extras_box.setSpacing(4)
+    extras_box.addLayout(settings)
     route=QHBoxLayout()
     route.setContentsMargins(0,0,0,0)
     route.setSpacing(5)
@@ -73,7 +87,45 @@ def reflow_player(player, original=False):
     for widget in (player.route_label,player.device_choice,player.status):
         route.addWidget(widget)
     route.addStretch(1)
-    outer.addLayout(route)
+    extras_box.addLayout(route)
+    outer.addWidget(extras_panel)
+    # Hide optional rows automatically when available width cannot fit
+    # the real controls. The very same controls remain reachable via
+    # Opciones, without a permanent scroll area or clone settings.
+    class _PreviewResponsive(QObject):
+        def __init__(self,parent):
+            super().__init__(parent)
+            self.narrow=None
+            self.open=False
+        def eventFilter(self,obj,event):
+            if obj is player and event.type()==QEvent.Resize:
+                QTimer.singleShot(0,self.refresh)
+            return False
+        def refresh(self):
+            import shiboken6
+            if not shiboken6.isValid(player):return
+            narrow=player.width()<450
+            if self.narrow!=narrow:
+                self.narrow=narrow
+                self.open=False
+            player.options_button.setVisible(narrow)
+            extras_panel.setVisible(not narrow or self.open)
+            player.options_button.setText("Opciones ▴" if self.open else "Opciones ▾")
+            player.play_button.setMinimumWidth(30 if narrow else 100)
+            player.stop_button.setMinimumWidth(30 if narrow else 85)
+            player.play_button.setText("▶" if narrow else "▶ Reproducir")
+            player.stop_button.setText("■" if narrow else "■ Detener")
+            player.clock.setMinimumWidth(0)
+            player.updateGeometry()
+        def toggle(self):
+            if self.narrow:
+                self.open=not self.open
+                self.refresh()
+    responsive=_PreviewResponsive(player)
+    player._reflow_responsive=responsive
+    player.options_button.clicked.connect(responsive.toggle)
+    player.installEventFilter(responsive)
+    QTimer.singleShot(0,responsive.refresh)
     player.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Preferred)
     player.setMinimumWidth(0)
     player._extended_preview=True

@@ -5,7 +5,7 @@ import tempfile,os,sys,json,wave
 os.environ["QT_QPA_PLATFORM"]="offscreen"
 with tempfile.TemporaryDirectory(prefix="stemmidi_presets_integrales_") as d:
     os.environ["STEMMIDI_WORKSPACE"]=d
-    sys.path.insert(0,"/media/javi/Recuperacion/Monitor_de_Grabacion")
+    sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
     from PySide6.QtWidgets import QApplication
     from ux_controls import PresetStrip,PRESET_DIR
     from main import MonitorWindow

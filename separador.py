@@ -70,6 +70,7 @@ class SeparadorDialog(QDialog):
         self.busy = False
         self.cancelled = False
         self.steps = 0
+        self.sample_setting = 44100  # valor inicial; preferencias guardadas tienen prioridad
         self.started_at = None
         self.latest_outputs = []
         self.log_lines = 0
@@ -121,7 +122,7 @@ class SeparadorDialog(QDialog):
                 "format":self.export_fmt.currentText(),
                 "normalization":getattr(self,"norm_setting",.9),
                 "amplification":getattr(self,"amp_setting",0.0),
-                "sample_rate":getattr(self,"sample_setting",48000),
+                "sample_rate":getattr(self,"sample_setting",44100),
                 "requested_stems":(self.requested_stems()
                     if hasattr(self,"requested_stems") else [])}
 
@@ -168,7 +169,7 @@ class SeparadorDialog(QDialog):
                 self.export_fmt.setCurrentText(data["format"])
             self.norm_setting=float(data.get("normalization",0.9))
             self.amp_setting=float(data.get("amplification",0.0))
-            self.sample_setting=int(data.get("sample_rate",48000))
+            self.sample_setting=int(data.get("sample_rate",44100))
             if data.get("folder"):
                 self.dest_edit.setText(str(data["folder"]))
             if data.get("audio_path") and Path(data["audio_path"]).is_file():
@@ -178,6 +179,11 @@ class SeparadorDialog(QDialog):
             pass
 
     def save_preferences(self):
+        # Los parámetros del proyecto activo se guardan sólo con Guardar;
+        # al pulsar Salir sin guardar no se modifican las preferencias.
+        owner=getattr(getattr(self,"workspace",None),"main",None)
+        if owner is not None and getattr(owner,"project_dir",None) and not getattr(owner,"_explicit_save",False):
+            return
         prefs = {
             "profile": self.profile.currentText(),
             "quality": self.quality.currentText(),
@@ -187,7 +193,7 @@ class SeparadorDialog(QDialog):
             "audio_path": self.file_edit.text().strip(),
             "normalization": getattr(self,"norm_setting",0.9),
             "amplification": getattr(self,"amp_setting",0.0),
-            "sample_rate": getattr(self,"sample_setting",48000),
+            "sample_rate": getattr(self,"sample_setting",44100),
         }
         try:
             PREFERENCES.write_text(json.dumps(prefs, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -571,7 +577,7 @@ class SeparadorDialog(QDialog):
                 "--log_level", "info",
                 "--normalization", str(getattr(self,"norm_setting",0.9)),
                 "--amplification", str(getattr(self,"amp_setting",0)),
-                "--sample_rate", str(getattr(self,"sample_setting",48000)),
+                "--sample_rate", str(getattr(self,"sample_setting",44100)),
                 "--demucs_shifts", str((1, 2, 4)[self.quality.currentIndex()]),
                 "--demucs_overlap", str((0.25, 0.50, 0.65)[self.quality.currentIndex()]),
                 "--mdxc_overlap", str((8, 12, 16)[self.quality.currentIndex()]),

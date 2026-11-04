@@ -4,7 +4,7 @@ os.environ["QT_QPA_PLATFORM"]="offscreen"
 os.environ["STEMMIDI_NO_STARTUP_DIALOG"]="1"
 with tempfile.TemporaryDirectory(prefix="sep_pitch_real_") as temp:
     os.environ["STEMMIDI_WORKSPACE"]=temp
-    sys.path.insert(0,"/media/javi/Recuperacion/Monitor_de_Grabacion")
+    sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
     from PySide6.QtWidgets import QApplication,QDialog,QMessageBox
     from PySide6.QtCore import QTimer
     from main import MonitorWindow,STYLE

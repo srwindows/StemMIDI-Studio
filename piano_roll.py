@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame, QGraphicsItem,
     QGraphicsRectItem, QGraphicsScene, QGraphicsSimpleTextItem, QGraphicsView,
     QHBoxLayout, QHeaderView, QLabel, QMessageBox, QPushButton, QScrollArea,
-    QSlider, QSpinBox, QDoubleSpinBox, QSplitter, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
+    QSlider, QSpinBox, QDoubleSpinBox, QMenu, QSplitter, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
     QWidget,
 )
 from preview_player import PreviewPlayer
@@ -41,6 +41,40 @@ def note_name(pitch):
     notes = ("Do", "Do♯", "Re", "Re♯", "Mi", "Fa",
              "Fa♯", "Sol", "Sol♯", "La", "La♯", "Si")
     return f"{notes[pitch%12]}{pitch//12-1}"
+
+
+def _recover_legacy_generated_roles(tracks):
+    """Solo MIDI antiguos del compositor: una pista mono y otra polifónica.
+
+    Se infiere el papel de modo CONSERVADOR si hay dos pistas, se conservó
+    «Composición» pero se perdió el nombre de la otra. En caso ambiguo no
+    se inventan funciones ni se altera el MIDI original en disco.
+    """
+    if (len(tracks)!=2 or tracks[0]["name"]!="Composición"
+            or tracks[1]["name"]!="Pista 2"
+            or not all(tr["notes"] for tr in tracks)):
+        return
+    def overlap(notes):
+        points=[]
+        for n in notes:
+            points.extend(((n["start"],1),(n["end"],-1)))
+        active=maximum=0
+        for _,delta in sorted(points,key=lambda e:(e[0],e[1])):
+            active+=delta
+            maximum=max(maximum,active)
+        return maximum
+    counts=[overlap(tr["notes"]) for tr in tracks]
+    if (counts[0]==1 and counts[1]>=2):
+        roles=("melody","harmony")
+    elif (counts[1]==1 and counts[0]>=2):
+        roles=("harmony","melody")
+    else:
+        return
+    for track,role in zip(tracks,roles):
+        track["_composition_role"]=role
+        track["_composition_role_inferred"]=True
+        track["name"]=("Melodía" if role=="melody"
+                       else "Acordes")+" · recuperados del MIDI antiguo"
 
 
 def parse_file(path):
@@ -87,15 +121,21 @@ def parse_file(path):
         name = source.name or f"Pista {index+1}"
         tracks.append({"name":name,"notes":notes,"other":other,
                        "channels":sorted(channels),"program":program})
+    _recover_legacy_generated_roles(tracks)
     return midi,tracks
 
 
 def export_file(midi,tracks,destination):
     """Escribe una copia MIDI tipo 1 sin perder los eventos ajenos a notas."""
     out=mido.MidiFile(type=1, ticks_per_beat=midi.ticks_per_beat)
-    for tr in tracks:
-        events=[]
+    for index,tr in enumerate(tracks):
+        # El nombre de pista forma parte del MIDI exportado. Antes solo
+        # existía en el modelo del editor; al guardar se perdía el rol
+        # de «Melodía»/«Acordes» y «Adaptarse» podía leerlo mal después.
+        events=[(0,-1,mido.MetaMessage(
+            "track_name",name=str(tr.get("name") or f"Pista {index+1}"),time=0))]
         for tick,msg in tr["other"]:
+            if msg.type=="track_name":continue  # Reemplazar, no duplicar.
             # Se copian y ordenan, no se modifica el MIDI en memoria original.
             events.append((max(0,int(tick)), 1, msg.copy(time=0)))
         for n in tr["notes"]:
@@ -260,26 +300,81 @@ class RollView(QGraphicsView):
         self._scrub_active=False
         self.setDragMode(QGraphicsView.RubberBandDrag)
 
+    def contextMenuEvent(self,event):
+        """Las mismas operaciones MIDI en el editor completo y el flotante."""
+        editor=self.editor
+        if editor.midi is None:
+            event.ignore()
+            return
+        hit=self.itemAt(event.pos())
+        while hit is not None and not isinstance(hit,NoteBox):
+            hit=hit.parentItem()
+        if isinstance(hit,NoteBox) and hit.index not in editor.selected_indices:
+            editor.select_note(hit.index)
+        keys=editor.context_note_keys()
+        point=self.mapToScene(event.pos())
+        paste_tick=editor.snap_tick(editor.x_to_tick(point.x()))
+        menu=QMenu(self)
+        copy_action=menu.addAction("Copiar")
+        paste_action=menu.addAction("Pegar")
+        delete_action=menu.addAction("Eliminar")
+        menu.addSeparator()
+        measure_action=menu.addAction("Ajustar al inicio del compás")
+        for action in (copy_action,delete_action,measure_action):
+            action.setEnabled(bool(keys))
+        paste_action.setEnabled(bool(getattr(editor,"_context_clipboard",None)))
+        chosen=menu.exec(event.globalPos())
+        if chosen==copy_action:
+            editor.context_copy_notes(keys)
+        elif chosen==paste_action:
+            editor.context_paste_notes(paste_tick)
+        elif chosen==delete_action:
+            editor.context_delete_notes(keys)
+        elif chosen==measure_action:
+            editor.context_align_to_measure(keys)
+        event.accept()
+
     def wheelEvent(self,event):
-        if event.modifiers() & Qt.AltModifier:
-            change=22 if event.angleDelta().y()>0 else -22
-            self.editor.zoom_vertical.setValue(max(
-                self.editor.zoom_vertical.minimum(),min(
-                    self.editor.zoom_vertical.maximum(),
-                    self.editor.zoom_vertical.value()+change)))
+        """Editor completo: scroll bidimensional real de trackpad Qt6.
+
+        La vista principal y el editor flotante deben coincidir: horizontal
+        mueve la canción, vertical recorre las teclas, sin mezclar ejes.
+        """
+        pixel=event.pixelDelta()
+        angle=event.angleDelta()
+        dx=(float(pixel.x()) if pixel.x() else
+            float(angle.x())*.8)
+        dy=(float(pixel.y()) if pixel.y() else
+            float(angle.y())*.8)
+        mods=event.modifiers()
+        if mods & Qt.AltModifier:
+            direction=dy if dy else dx
+            if direction:
+                step=22 if direction>0 else -22
+                control=self.editor.zoom_vertical
+                control.setValue(max(control.minimum(),min(
+                    control.maximum(),control.value()+step)))
             event.accept()
-        elif event.modifiers() & Qt.ControlModifier:
-            change=22 if event.angleDelta().y()>0 else -22
-            self.editor.zoom.setValue(max(self.editor.zoom.minimum(),
-                    min(self.editor.zoom.maximum(),
-                        self.editor.zoom.value()+change)))
+            return
+        if mods & Qt.ControlModifier:
+            direction=dy if dy else dx
+            if direction:
+                step=22 if direction>0 else -22
+                control=self.editor.zoom
+                control.setValue(max(control.minimum(),min(
+                    control.maximum(),control.value()+step)))
             event.accept()
-        elif event.modifiers() & Qt.ShiftModifier:
-            scroll=self.horizontalScrollBar()
-            scroll.setValue(scroll.value()-int(event.angleDelta().y()*.8))
-            event.accept()
-        else:
-            super().wheelEvent(event)
+            return
+        if mods & Qt.ShiftModifier and dy and not dx:
+            dx=dy
+            dy=0
+        if dx:
+            bar=self.horizontalScrollBar()
+            bar.setValue(bar.value()-round(dx))
+        if dy:
+            bar=self.verticalScrollBar()
+            bar.setValue(bar.value()-round(dy))
+        event.accept()
 
     def mouseMoveEvent(self,event):
         if self._scrub_active:
@@ -404,6 +499,9 @@ class RollView(QGraphicsView):
 
 
 class PianoRollDialog(QDialog):
+    midiOpened=Signal(str)
+    notesChanged=Signal()
+
     def __init__(self,file_path=None,parent=None):
         super().__init__(parent)
         self.setWindowTitle("Editor MIDI · Piano Roll")
@@ -601,10 +699,17 @@ class PianoRollDialog(QDialog):
         open_btn=QPushButton("Abrir MIDI…")
         open_btn.clicked.connect(self.choose_file)
         controls.addWidget(open_btn)
-        self.save_button=QPushButton("Guardar MIDI editado…")
+        self.save_button=QPushButton("Guardar MIDI")
         self.save_button.setObjectName("primary")
-        self.save_button.clicked.connect(self.save_as)
+        self.save_button.setToolTip(
+            "Guardar las notas sobre el MIDI abierto del proyecto, "
+            "sin generar archivos con sufijos _2, _3 o _piano_nuevo.")
+        self.save_button.clicked.connect(self.save_current)
         controls.addWidget(self.save_button)
+        self.save_as_button=QPushButton("Guardar como…")
+        self.save_as_button.setToolTip("Crear otra copia solo si lo eliges expresamente.")
+        self.save_as_button.clicked.connect(self.save_as)
+        controls.addWidget(self.save_as_button)
         self.undo_btn=QPushButton("Deshacer")
         self.undo_btn.clicked.connect(self.undo)
         controls.addWidget(self.undo_btn)
@@ -681,10 +786,10 @@ class PianoRollDialog(QDialog):
         root.addWidget(horizontal_controls(controls,self))
         root.addWidget(horizontal_controls(zoom_row,self))
         self.roll_presets=PresetStrip("piano_roll_vista",{
-            "Edición detallada":{"zoom":180,"zoom_vertical":29,"quant":8,"tempo_mode":"keep_time"},
-            "Edición clásica":{"zoom":96,"zoom_vertical":23,"quant":4,"tempo_mode":"keep_time"},
-            "Vista general":{"zoom":50,"zoom_vertical":10,"quant":2,"tempo_mode":"keep_time"},
-            "Edición libre":{"zoom":115,"zoom_vertical":18,"quant":0,"tempo_mode":"keep_time"},
+            "Edición detallada":{"zoom":180,"zoom_vertical":29,"quant":8,"tempo_mode":"change_speed"},
+            "Edición clásica":{"zoom":96,"zoom_vertical":23,"quant":4,"tempo_mode":"change_speed"},
+            "Vista general":{"zoom":50,"zoom_vertical":10,"quant":2,"tempo_mode":"change_speed"},
+            "Edición libre":{"zoom":115,"zoom_vertical":18,"quant":0,"tempo_mode":"change_speed"},
         },self.view_snapshot,self.apply_view_preset,self)
         self.roll_presets.setVisible(False)
         self.roll_presets.setMaximumHeight(45)
@@ -698,12 +803,11 @@ class PianoRollDialog(QDialog):
         self.tempo_bpm=SliderNumber(35,300,120,.1,2," BPM")
         self.tempo_bpm.setValue(120)
         tempo_bar.addWidget(self.tempo_bpm)
-        tempo_bar.addWidget(QLabel("Aplicar como"))
-        self.tempo_mode=QComboBox()
-        self.tempo_mode.addItem("Corregir rejilla sin alterar los segundos", "keep_time")
-        self.tempo_mode.addItem("Cambiar la velocidad de reproducción", "change_speed")
-        self.tempo_mode.setMinimumWidth(220)
-        tempo_bar.addWidget(self.tempo_mode)
+        # No transformar notas para mantener el tiempo absoluto: eso
+        # cambia blancas/negras/corcheas y contradice el BPM musical.
+        self.tempo_mode=QComboBox(self)
+        self.tempo_mode.addItem("Conservar compases y figuras", "change_speed")
+        tempo_bar.addWidget(QLabel("Las figuras MIDI no se modifican"))
         self.tempo_apply=QPushButton("Aplicar BPM")
         self.tempo_apply.clicked.connect(self.apply_tempo_change)
         tempo_bar.addWidget(self.tempo_apply)
@@ -852,6 +956,9 @@ class PianoRollDialog(QDialog):
         except (OSError,EOFError,ValueError,TypeError) as exc:
             QMessageBox.warning(self,"MIDI no válido",str(exc))
             return False
+        # Baseline inmutable en memoria para Reset de edición. No leer ni
+        # modificar el MIDI físico cuando el usuario pulsa Reset.
+        self._initial_tracks=copy.deepcopy(tracks)
         self.midi,self.tracks=midi,tracks
         self.current_path=Path(path).resolve()
         self._pending_seek_ms=None
@@ -878,6 +985,7 @@ class PianoRollDialog(QDialog):
         # Encajar automáticamente al ABRIR, con el tamaño definitivo
         # del viewport, sin perder la posibilidad de hacer zoom manual.
         QTimer.singleShot(0,self.fit_notes)
+        self.midiOpened.emit(str(self.current_path))
         return True
 
     def check_discard(self):
@@ -1058,6 +1166,9 @@ class PianoRollDialog(QDialog):
                            f"{len(self.current_notes)} notas · "
                            f"{sum(len(t['notes']) for t in self.tracks)} notas en total")
         self.scene.blockSignals(previous)
+        # La miniatura de Inicio muestra el modelo MIDI en memoria, incluso
+        # mientras las modificaciones aún NO se han guardado en disco.
+        self.notesChanged.emit()
 
     def change_tool(self,index):
         self.tool_mode=self.tool.currentData() or "select"
@@ -1185,8 +1296,28 @@ class PianoRollDialog(QDialog):
         self.redraw()
 
     def update_track_list(self):
-        for idx,tr in enumerate(self.tracks):
-            self.tracks_list.topLevelItem(idx).setText(1,str(len(tr["notes"])))
+        # Generación multipista / Deshacer / Reset pueden aumentar y reducir
+        # el número de pistas. La versión anterior asumía un árbol estático
+        # y se cerraba al llamar setText() sobre un item inexistente.
+        self.track_index=max(0,min(self.track_index,len(self.tracks)-1))
+        tree=self.tracks_list
+        old=tree.blockSignals(True)
+        if tree.topLevelItemCount()!=len(self.tracks):
+            tree.clear()
+            for idx,tr in enumerate(self.tracks):
+                channels=",".join(str(ch+1) for ch in tr["channels"]) or "—"
+                tree.addTopLevelItem(QTreeWidgetItem([
+                    f"{idx+1:02} · {tr['name']} · CH {channels}",
+                    str(len(tr["notes"]))]))
+        else:
+            for idx,tr in enumerate(self.tracks):
+                item=tree.topLevelItem(idx)
+                channels=",".join(str(ch+1) for ch in tr["channels"]) or "—"
+                item.setText(0,f"{idx+1:02} · {tr['name']} · CH {channels}")
+                item.setText(1,str(len(tr["notes"])))
+        if self.tracks:
+            tree.setCurrentItem(tree.topLevelItem(self.track_index))
+        tree.blockSignals(old)
 
     def undo(self):
         if not self.history:return
@@ -1224,6 +1355,123 @@ class PianoRollDialog(QDialog):
         self.selected_indices.clear()
         self.update_track_list();self.redraw()
 
+    def context_note_keys(self):
+        """Selección del editor completo: índices de la pista activa."""
+        return {(self.track_index,i) for i in self.selected_indices
+                if 0<=i<len(self.current_notes)}
+
+    def context_valid_keys(self,keys):
+        return {(t,i) for t,i in keys
+                if 0<=t<len(self.tracks)
+                and 0<=i<len(self.tracks[t]["notes"])}
+
+    def context_copy_notes(self,keys):
+        """Portapapeles MIDI del editor: conserva pista, altura y duraciones."""
+        keys=self.context_valid_keys(keys)
+        if not keys:return False
+        content=[(t,copy.deepcopy(self.tracks[t]["notes"][i]))
+                 for t,i in keys]
+        content.sort(key=lambda pair:(pair[1]["start"],pair[0],
+                                      pair[1]["pitch"],pair[1]["end"]))
+        self._context_clipboard=content
+        self._context_clipboard_first=min(n["start"] for _,n in content)
+        self.stats.setText(f"Copiadas {len(content)} notas MIDI para pegar")
+        return True
+
+    def context_paste_notes(self,tick):
+        """Pegar en el compás/posición elegida con clic derecho.
+
+        Pegar no altera ni desplaza las originales. Conserva los intervalos
+        temporales del grupo y la pista de origen en el mismo MIDI.
+        """
+        content=getattr(self,"_context_clipboard",None)
+        if not self.tracks or not content:return set()
+        first=getattr(self,"_context_clipboard_first",0)
+        delta=max(0,int(tick))-first
+        # Copia de múltiples pistas: conservar los canales y el timbre.
+        self.snapshot()
+        keys=set()
+        for track,note in content:
+            track=track if 0<=track<len(self.tracks) else self.track_index
+            cloned=copy.deepcopy(note)
+            duration=max(1,int(note["end"])-int(note["start"]))
+            cloned["start"]=max(0,int(note["start"])+delta)
+            cloned["end"]=cloned["start"]+duration
+            index=len(self.tracks[track]["notes"])
+            self.tracks[track]["notes"].append(cloned)
+            keys.add((track,index))
+        self.selected_indices={i for t,i in keys if t==self.track_index}
+        self.selected_index=(min(self.selected_indices)
+                             if self.selected_indices else None)
+        self.update_track_list()
+        self.redraw()
+        self.notesChanged.emit()
+        return keys
+
+    def context_delete_notes(self,keys):
+        keys=self.context_valid_keys(keys)
+        if not keys:return False
+        from collections import defaultdict
+        grouped=defaultdict(list)
+        for t,i in keys:grouped[t].append(i)
+        self.snapshot()
+        for track,indices in grouped.items():
+            for i in sorted(indices,reverse=True):
+                del self.tracks[track]["notes"][i]
+        self.selected_indices.clear()
+        self.selected_index=None
+        self.update_track_list()
+        self.redraw()
+        self.notesChanged.emit()
+        return True
+
+    def context_measure_start(self,tick):
+        """Inicio de compás más próximo, respetando el indicador MIDI.
+
+        4/4 por defecto, pero también admite 3/4, 6/8 y cambios de
+        compás almacenados en eventos meta time_signature.
+        """
+        tpb=self.ticks_per_beat
+        signatures=[(0,4,4)]
+        for track in self.tracks:
+            for at,msg in track.get("other",()):
+                if getattr(msg,"type",None)=="time_signature":
+                    signatures.append((max(0,int(at)),
+                                       max(1,int(msg.numerator)),
+                                       max(1,int(msg.denominator))))
+        signatures.sort(key=lambda x:x[0])
+        # En cambios de compás, el evento inicia la nueva sección.
+        active=signatures[0]
+        for signature in signatures[1:]:
+            if signature[0]>tick:break
+            active=signature
+        start,num,den=active
+        bar=max(1,round(tpb*4*num/den))
+        distance=max(0,tick-start)
+        return max(0,start+round(distance/bar)*bar)
+
+    def context_align_to_measure(self,keys):
+        """Alinear la primera nota al inicio del compás más próximo.
+
+        Si hay múltiples notas, desplazarlas JUNTAS manteniendo todos
+        los intervalos, duraciones, alturas, canales y dinámica.
+        """
+        keys=self.context_valid_keys(keys)
+        if not keys:return False
+        earliest=min(self.tracks[t]["notes"][i]["start"] for t,i in keys)
+        destination=self.context_measure_start(earliest)
+        delta=destination-earliest
+        if not delta:return False
+        self.snapshot()
+        for track,index in keys:
+            note=self.tracks[track]["notes"][index]
+            note["start"]+=delta
+            note["end"]+=delta
+        self.update_track_list()
+        self.redraw()
+        self.notesChanged.emit()
+        return True
+
     def delete_selected(self):
         indexes=sorted((i for i in self.selected_indices if i<len(self.current_notes)),
                         reverse=True)
@@ -1239,6 +1487,7 @@ class PianoRollDialog(QDialog):
         if indexes and any(self.current_notes[i]["velocity"]!=value for i in indexes):
             self.snapshot()
             for i in indexes:self.current_notes[i]["velocity"]=value
+            self.notesChanged.emit()
 
     def copy_note(self):
         indexes=sorted(i for i in self.selected_indices if 0<=i<len(self.current_notes))
@@ -1276,49 +1525,24 @@ class PianoRollDialog(QDialog):
         self.redraw()
 
     def current_bpm(self):
-        data=[]
-        for track in self.tracks:
-            for tick,msg in track["other"]:
-                if msg.type=="set_tempo":
-                    data.append((tick,msg.tempo))
-        tempo=min(data,key=lambda x:x[0])[1] if data else 500000
-        return 60_000_000./tempo
+        from midi_tempo_utils import first_bpm
+        return first_bpm(self.tracks)
 
     def apply_tempo_change(self):
-        if not self.midi or not self.tracks:
-            return
+        if not self.midi or not self.tracks:return
+        from midi_tempo_utils import set_bpm_preserve_figures
         target=float(self.tempo_bpm.value())
         previous=self.current_bpm()
         if abs(target-previous)<.005:return
-        # Los MIDI con cambios internos de tempo también pueden escalarse
-        # proporcionalmente sin borrar sus cambios de sección.
-        ratio=target/previous
-        preserve_seconds=self.tempo_mode.currentData()=="keep_time"
         self.snapshot()
-        meta_count=0
-        for track in self.tracks:
-            if preserve_seconds:
-                for note in track["notes"]:
-                    note["start"]=round(note["start"]*ratio)
-                    note["end"]=max(note["start"]+1,round(note["end"]*ratio))
-            new_other=[]
-            for tick,msg in track["other"]:
-                if preserve_seconds:
-                    tick=round(tick*ratio)
-                if msg.type=="set_tempo":
-                    msg=msg.copy(tempo=max(10000,round(msg.tempo/ratio)))
-                    meta_count+=1
-                new_other.append((tick,msg))
-            track["other"]=new_other
-        if not meta_count:
-            self.tracks[0]["other"].append((
-                0,mido.MetaMessage("set_tempo",tempo=mido.bpm2tempo(target),time=0)))
+        if not set_bpm_preserve_figures(self.tracks,target):
+            self.history.pop()
+            return
         self.tempo_bpm.setValue(self.current_bpm())
         self.redraw()
-        self.stats.setText(f"BPM: {previous:.2f} → {self.current_bpm():.2f} · "
-            +("duración real conservada (se ajustan ticks y compases)"
-              if preserve_seconds else "velocidad musical modificada")
-            +" · pulsa Aplicar edición a la tarea temporal para escuchar el cambio.")
+        self.stats.setText(
+            f"BPM: {previous:.2f} → {self.current_bpm():.2f} · "
+            "todas las notas, duraciones, compases y ticks MIDI intactos.")
         self.dirty=True
 
     def view_snapshot(self):
@@ -1448,6 +1672,9 @@ class PianoRollDialog(QDialog):
         self._pending_seek_ms=None
         self.play_roll.setText("▶ Play")
         self.timeline.setValue(0)
+        # Rebobinar también el viewport de la pestaña completa; Stop no
+        # debe dejar al usuario en el último compás visitado.
+        self.view.horizontalScrollBar().setValue(0)
         self.update_playhead()
 
     def last_tick(self):
@@ -1589,6 +1816,25 @@ class PianoRollDialog(QDialog):
                     max(0,self.view.horizontalScrollBar().value()+
                         int(visible.x()-self.view.viewport().width()*.35)))
 
+    def save_current(self):
+        if not self.midi or not self.current_path:return
+        workspace=getattr(self,"workspace",None)
+        project=getattr(workspace.main,"project_dir",None) if workspace else None
+        if project is None:
+            return self.save_as()
+        try:
+            from project_transaction import commit_edited_midi
+            final=commit_edited_midi(self,project)
+            self.file_label.setText(final.name)
+            self.stats.setText("MIDI guardado: "+str(final))
+            self.refresh_midi_list()
+            if workspace.main.studio_home:
+                workspace.main.studio_home.refresh(force=True)
+            return final
+        except (OSError,ValueError,TypeError) as error:
+            QMessageBox.warning(self,"No se pudo guardar MIDI",str(error))
+            return None
+
     def save_as(self):
         if not self.midi or not self.current_path:return
         from export_dialog import export_files
@@ -1649,6 +1895,7 @@ class PianoRollDialog(QDialog):
             raise
         self.dirty=False
         self.history.clear();self.future.clear()
+        self.notesChanged.emit()
         from bibliotecas import register_result
         from task_staging import TEMP_ROOT
         from task_staging import inside

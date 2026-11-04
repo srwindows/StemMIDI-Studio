@@ -14,6 +14,8 @@ MODULES={
     "monitor":"grabaciones",
     "separaciones":"stems",
     "stems":"stems",
+    # Las voces y los coros separados son stems, no salidas del afinador.
+    "voces":"stems",
     "midi":"audio_a_midi",
     "audio_a_midi":"audio_a_midi",
     "bateria":"bateria",
@@ -22,6 +24,7 @@ MODULES={
     "mezclador":"mezclador",
     "mezclas":"mezclador",
     "piano_roll":"piano_roll",
+    "midi_editado":"piano_roll",
     "resultados":"resultados",
 }
 DIRECTORIES=tuple(dict.fromkeys(MODULES.values()))+("temporales","backup")
@@ -30,12 +33,17 @@ REQUIRED=("stems","audio_a_midi","afinacion_vocal","resultados")
 def layout_active(project):
     if not project:return False
     root=Path(project).resolve()
-    if not root.is_dir() or not all((root/name).is_dir() for name in REQUIRED):
-        return False
+    if not root.is_dir():return False
     # Evitar reclasificar proyectos antiguos que casualmente contengan
     # carpetas llamadas stems/resultados. Su manifiesto es la autoridad.
     manifests=list(root.glob("*.stemstudio.json"))
-    if not manifests:return True  # Etapa anterior al primer persist().
+    if not manifests:
+        # Antes del primer persist() el instalador del nuevo layout
+        # crea «temporales». Un proyecto heredado sin manifiesto,
+        # solo con backup/separaciones, NO debe tratarse como nuevo:
+        # sus rutas antiguas continúan siendo su fuente de verdad.
+        return (root/"temporales").is_dir() and not (
+            root/"temporales").is_symlink()
     import json
     for manifest in manifests:
         try:
@@ -49,7 +57,7 @@ def install(project):
     """Crear una sola vez subcarpetas fijas, sin tocar medios ya existentes."""
     root=Path(project).expanduser().resolve()
     root.mkdir(parents=True,exist_ok=True)
-    for name in DIRECTORIES:
+    for name in ("temporales",):
         child=root/name
         if child.is_symlink():
             raise ValueError("Carpeta del proyecto es un enlace: "+str(child))

@@ -1,7 +1,7 @@
 """Ajuste transversal de listas desplegables de StemMIDI Studio."""
-from PySide6.QtCore import QObject,QTimer,Qt
+from PySide6.QtCore import QObject,QTimer,Qt,QEvent
 from PySide6.QtGui import QFontMetrics
-from PySide6.QtWidgets import QComboBox,QSizePolicy,QPushButton,QLineEdit,QSlider
+from PySide6.QtWidgets import QApplication,QWidget,QComboBox,QSizePolicy,QPushButton,QLineEdit,QSlider
 
 class ComboPolisher(QObject):
     def __init__(self,root):
@@ -9,11 +9,28 @@ class ComboPolisher(QObject):
         self.root=root
         self._wired=set()
         self.apply_all()
-        # Algunas listas de modelos, audio y MIDI se rellenan dinámicamente.
-        self.timer=QTimer(self)
-        self.timer.setInterval(2400)
-        self.timer.timeout.connect(self.apply_all)
-        self.timer.start()
+        # No recorrer miles de widgets cada 2,4 segundos mientras suena.
+        # Los controles que aparecen después reciben el mismo formato
+        # una sola vez, cuando llegan a ser visibles.
+        self.timer=None
+        QApplication.instance().installEventFilter(self)
+
+    def _belongs(self,widget):
+        if not isinstance(widget,QWidget):return False
+        current=widget
+        for _ in range(36):
+            if current is self.root:return True
+            current=current.parentWidget()
+            if current is None:break
+        return False
+
+    def eventFilter(self,obj,event):
+        if event.type()==QEvent.Show and self._belongs(obj):
+            if isinstance(obj,QSlider):self.apply_slider(obj)
+            elif isinstance(obj,QLineEdit):self.apply_path(obj)
+            elif isinstance(obj,QComboBox):self.apply_one(obj)
+            elif isinstance(obj,QPushButton):self.apply_button(obj)
+        return False
     @staticmethod
     def _belongs_to_browser(widget):
         # El explorador tiene distribución propia y no admite reglas de

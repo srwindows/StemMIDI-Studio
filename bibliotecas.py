@@ -218,6 +218,28 @@ class ResultsWindow(QDialog):
                             if base.resolve() in resolved.parents:
                                 groups.setdefault(str(resolved.parent),[]).append(resolved)
                 data=sorted(groups.items(),key=lambda group:group[0])
+        # Evitar repoblar el árbol entero, perder la selección y volver
+        # a lanzar el decodificador de preescucha sin cambios reales.
+        def fingerprints(files):
+            signatures=[]
+            for path in files:
+                try:
+                    stat=path.stat()
+                    if path.is_file():
+                        signatures.append((str(path),stat.st_size,stat.st_mtime_ns))
+                except OSError:
+                    # Una exportación puede terminar o desaparecer justo
+                    # mientras actualizamos el catálogo; probar en el tick
+                    # siguiente en vez de interrumpir el proyecto.
+                    continue
+            return tuple(signatures)
+        main=getattr(getattr(self,"workspace",None),"main",None)
+        signature=(str(getattr(main,"project_dir",None)),
+                   str(self.focus_file),str(self.focus_folder),
+                   tuple((str(folder),fingerprints(paths))
+                         for folder,paths in data))
+        if signature==getattr(self,"_catalog_signature",None):return
+        self._catalog_signature=signature
         self.tree.blockSignals(True)
         self.tree.clear()
         first=None

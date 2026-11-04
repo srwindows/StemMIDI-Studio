@@ -50,13 +50,53 @@ def play_external_intro() -> bool:
         completed = subprocess.run(
             command, env=env, stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-            timeout=12, check=False,
+            timeout=25, check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
     if completed.returncode != 0:
         return False
     os.environ["STEMMIDI_INTRO_PLAYED"] = "1"
+    return True
+
+
+def start_external_intro():
+    """Iniciar la intro sin bloquear la construcción de la ventana principal.
+
+    La duración, el audio y el vídeo originales NO se alteran.
+    El programa trabaja en memoria mientras FFplay reproduce la intro.
+    """
+    if os.environ.get("STEMMIDI_INTRO_PLAYED") == "1":
+        return None
+    video=intro_path()
+    if not video.is_file() or sys.platform!="linux":
+        return None
+    player=shutil.which("ffplay")
+    if not player:return None
+    env=os.environ.copy()
+    env.setdefault("SDL_AUDIODRIVER","pulseaudio")
+    command=[player,"-hide_banner","-loglevel","error","-autoexit",
+             "-fs","-noborder","-window_title","StemMIDI Studio - Intro",
+             "-exitonkeydown",str(video)]
+    try:
+        return subprocess.Popen(command,env=env,stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    except OSError:
+        return None
+
+
+def finish_external_intro(process):
+    """Esperar solamente los segundos restantes de la intro aprobada."""
+    if process is None:
+        return os.environ.get("STEMMIDI_INTRO_PLAYED")=="1"
+    try:
+        status=process.wait(timeout=25)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+        return False
+    if status!=0:return False
+    os.environ["STEMMIDI_INTRO_PLAYED"]="1"
     return True
 
 
@@ -81,7 +121,7 @@ class IntroVideo(QDialog):
         self.player.errorOccurred.connect(self._error)
         self.player.setSource(QUrl.fromLocalFile(str(intro_path())))
         # Protección ante ficheros dañados o motores sin eventos de finalización.
-        QTimer.singleShot(10500, self.finish)
+        QTimer.singleShot(18000, self.finish)
 
     def start(self):
         self.showFullScreen()

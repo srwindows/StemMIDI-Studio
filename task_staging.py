@@ -147,12 +147,16 @@ class TaskStorage:
         self.items=[]
         self.composite=None
         self.saved=set()
+        self.saved_exports={}
         self.versions=[]
         self.restore()
 
     @property
     def pending(self):
-        return bool(self.folder and self.folder.exists() and (self.items or self.composite))
+        if not self.folder or not self.folder.exists():return False
+        candidates=list(self.items)
+        if self.composite:candidates.append(self.composite)
+        return any(p.is_file() and str(p) not in self.saved for p in candidates)
 
     @property
     def processing_folder(self):
@@ -168,15 +172,21 @@ class TaskStorage:
             if not inside(folder,self.root) or not folder.is_dir():
                 return
             self.folder=folder
-            self.items=[Path(s) for s in obj.get("items",[]) if inside(s,folder) and Path(s).is_file()]
-            self.composite=Path(obj["composite"]) if obj.get("composite") and inside(obj["composite"],folder) and Path(obj["composite"]).is_file() else None
+            from project_layout import module_dir,layout_active
+            final=module_dir(self.project_dir,self.kind) if self.project_dir and layout_active(self.project_dir) else None
+            def allowed(s):
+                return (inside(s,folder) or (final is not None and inside(s,final))) and Path(s).is_file()
+            self.items=[Path(s) for s in obj.get("items",[]) if allowed(s)]
+            self.composite=Path(obj["composite"]) if obj.get("composite") and allowed(obj["composite"]) else None
             self.saved=set(obj.get("saved",[]))
+            self.saved_exports={str(a):str(b) for a,b in
+                                obj.get("saved_exports",{}).items()
+                                if isinstance(a,str) and isinstance(b,str)}
             self.versions=[{"composite":Path(v["composite"]),
                            "items":[Path(x) for x in v.get("items",[])]}
                            for v in obj.get("versions",[])
                            if isinstance(v,dict) and v.get("composite")
-                           and inside(v["composite"],folder)
-                           and Path(v["composite"]).is_file()]
+                           and allowed(v["composite"])]
             if self.kind=="midi" and self.composite is not None and not self.versions:
                 self.versions=[{"composite":self.composite,"items":list(self.items)}]
             if not self.items and not self.composite:
@@ -191,6 +201,7 @@ class TaskStorage:
              "items":[str(x) for x in self.items],
              "composite":str(self.composite) if self.composite else None,
              "saved":sorted(self.saved),
+             "saved_exports":dict(self.saved_exports),
              "versions":[{"composite":str(v["composite"]),
                           "items":[str(x) for x in v["items"]]}
                          for v in self.versions]}
@@ -213,6 +224,7 @@ class TaskStorage:
         self.items=[]
         self.composite=None
         self.saved=set()
+        self.saved_exports={}
         self.versions=[]
         self.manifest()
         return self.processing_folder
@@ -287,6 +299,29 @@ class TaskStorage:
         prefix=self.project_dir.name+"_"
         return name if name.startswith(prefix) else prefix+name
 
+    def _export_one(self,source,dest):
+        """Exportación repetible: la misma pista mantiene un solo archivo."""
+        from project_transaction import _atomic_copy,_equal
+        source=Path(source).resolve()
+        dest=Path(dest).resolve()
+        old=self.saved_exports.get(str(source))
+        if old and Path(old).parent.resolve()==dest:
+            target=Path(old)
+        else:
+            target=dest/self.export_name(source.name)
+            if target.is_file() and not _equal(source,target):
+                target=unique_dest(dest,target.name)
+        if target.is_file() and not _equal(source,target):
+            # Guardar el estado anterior una sola vez en backup.
+            if self.project_dir:
+                previous=self.project_dir/"backup"/"Exportaciones_anteriores"/self.kind/target.name
+                _atomic_copy(target,previous)
+        if not target.is_file() or not _equal(source,target):
+            _atomic_copy(source,target)
+        self.saved_exports[str(source)]=str(target)
+        self.saved.add(str(source))
+        return target
+
     def save(self,dest,all_files=False,indices=()):
         dest=Path(dest).expanduser().resolve()
         from project_layout import layout_active,module_dir
@@ -306,15 +341,14 @@ class TaskStorage:
             raise ValueError("No hay pistas seleccionadas para guardar")
         copied=[]
         for p in entries:
-            if not p.is_file() or not inside(p,self.folder):
-                raise ValueError("El archivo temporal ya no existe: "+str(p))
-            final=unique_dest(dest,self.export_name(p.name))
-            shutil.copy2(p,final)
-            if final.stat().st_size!=p.stat().st_size:
-                final.unlink(missing_ok=True)
-                raise OSError("La copia de audio/MIDI no coincide con el original temporal")
-            copied.append(final)
-            self.saved.add(str(p))
+            if not p.is_file():
+                raise ValueError("El archivo ya no existe: "+str(p))
+            if inside(p,dest):
+                copied.append(p)
+                continue
+            if not inside(p,self.folder):
+                raise ValueError("El archivo no pertenece al proyecto: "+str(p))
+            copied.append(self._export_one(p,dest))
         self.manifest()
         return copied
 
@@ -343,37 +377,64 @@ class TaskStorage:
             raise ValueError("Selecciona al menos un resultado")
         # Validar TODO antes de escribir una sola copia.
         for source in entries:
-            if not inside(source,self.folder) or not source.is_file():
-                raise ValueError("Archivo fuera de la tarea o no disponible: "+str(source))
+            if (not source.is_file() or
+                not (inside(source,self.folder) or inside(source,dest))):
+                raise ValueError("Archivo fuera del módulo o no disponible: "+str(source))
         dest.mkdir(parents=True,exist_ok=True)
         copied=[]
         for source in entries:
-            final=unique_dest(dest,self.export_name(source.name))
-            shutil.copy2(source,final)
-            if final.stat().st_size!=source.stat().st_size:
-                final.unlink(missing_ok=True)
-                raise OSError("La copia no coincide con el temporal: "+str(source))
-            copied.append(final)
-            self.saved.add(str(source))
+            copied.append(source if inside(source,dest)
+                          else self._export_one(source,dest))
         self.manifest()
         return copied
 
-    def discard(self):
-        if self.folder:
-            assert inside(self.folder,self.root)
-            # En NTFS/FUSE el cierre asíncrono de Qt/FFmpeg puede retrasar
-            # la eliminación de directorios aun cuando los ficheros ya no figuren.
-            for attempt in range(8):
-                if not self.folder.exists():
-                    break
-                try:
-                    shutil.rmtree(self.folder)
-                except OSError:
-                    if attempt==7:raise
-                    time.sleep(.14)
-        self.folder=None;self.items=[];self.composite=None;self.saved.clear()
-        self.versions=[]
-        self.manifest()
+    def discard(self,parent=None):
+        """Descartar pistas temporales con progreso REAL por archivo retirado."""
+        progress=None
+        try:
+            if self.folder:
+                assert inside(self.folder,self.root)
+                files=[p for p in self.folder.rglob("*")
+                       if p.is_file() or p.is_symlink()]
+                from project_progress import ProjectProgress
+                progress=ProjectProgress(parent,"Descartando resultados",
+                                         steps=len(files)+1)
+                for i,path in enumerate(files,1):
+                    progress.message(f"Retirando temporal {i}/{len(files)}: {path.name}")
+                    for attempt in range(8):
+                        try:
+                            path.unlink()
+                            break
+                        except FileNotFoundError:
+                            break
+                        except OSError:
+                            if attempt==7:raise
+                            time.sleep(.14)
+                    progress.stage(f"Temporal retirado {i}/{len(files)}: {path.name}")
+                # Los directorios se eliminan después de comprobar cada
+                # archivo. Si el disco deja algo bloqueado no se declara 100 %.
+                for folder in sorted((p for p in self.folder.rglob("*")
+                                      if p.is_dir() and not p.is_symlink()),
+                                     key=lambda p:len(p.parts),reverse=True):
+                    for attempt in range(8):
+                        try:
+                            folder.rmdir()
+                            break
+                        except FileNotFoundError:
+                            break
+                        except OSError:
+                            if attempt==7:raise
+                            time.sleep(.14)
+                self.folder.rmdir()
+            self.folder=None;self.items=[];self.composite=None;self.saved.clear()
+            self.saved_exports.clear()
+            self.versions=[]
+            self.manifest()
+            if progress is not None:
+                progress.stage("Inventario temporal actualizado")
+                progress.complete("Resultados temporales descartados")
+        finally:
+            if progress is not None:progress.close()
 
 
 class TrackLine(QFrame):
@@ -594,7 +655,7 @@ class TaskResults(QWidget):
         if result!=QMessageBox.Yes:
             return False
         self.preview.clear()
-        self.storage.discard()
+        self.storage.discard(parent=self)
         self.populate()
         self.status.setText("Tarea descartada. Puedes comenzar otra.")
         return True

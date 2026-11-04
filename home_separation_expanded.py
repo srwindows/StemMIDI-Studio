@@ -4,7 +4,7 @@ La tarjeta Inicio no se clona: al ampliar se cambia la presentación interna
 y todos los ajustes se aplican a los mismos widgets/presets de origen.
 """
 from pathlib import Path
-from PySide6.QtCore import Qt,QTimer
+from PySide6.QtCore import Qt,QTimer,QSettings
 from PySide6.QtWidgets import (
  QWidget,QFrame,QLabel,QVBoxLayout,QHBoxLayout,QGridLayout,
  QPushButton,QComboBox,QLineEdit,QSlider,QDoubleSpinBox,QCheckBox,
@@ -84,38 +84,193 @@ class ExpandedSeparator:
         base.setContentsMargins(8,7,8,8)
         base.setSpacing(8)
 
-        # Primera fila: presets guardados y archivo de entrada real.
+        # Cabecera compacta: 3 filas, sin perder preset, archivo ni modelo.
         top,one=panel()
-        one.addWidget(head("01 · ARCHIVO, PRESETS Y MODELO IA"))
+        one.setContentsMargins(9,6,9,6)
+        one.setSpacing(3)
+        one.addWidget(head("01 · ARCHIVO, PRESETS Y MODELO"))
         self.preset=QComboBox()
-        self.preset.setMinimumWidth(260)
-        self.preset.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
-        one.addLayout(row(QLabel("Preset"),self.preset))
+        self.preset.setMinimumWidth(95)
+        self.preset.setSizePolicy(QSizePolicy.Preferred,QSizePolicy.Fixed)
         self.preset_name=QLineEdit()
-        self.preset_name.setPlaceholderText("Nombre de preset propio")
+        self.preset_name.setPlaceholderText("Nombre preset")
         save=QPushButton("Guardar")
         remove=QPushButton("Borrar")
-        one.addLayout(row(self.preset_name,save,remove))
+        for button in (save,remove):
+            button.setMinimumWidth(0)
+            button.setSizePolicy(QSizePolicy.Fixed,QSizePolicy.Fixed)
+        preset_row=QHBoxLayout()
+        preset_row.setContentsMargins(0,0,0,0)
+        preset_row.setSpacing(4)
+        preset_row.addWidget(QLabel("Preset"))
+        preset_row.addWidget(self.preset,2)
+        preset_row.addWidget(self.preset_name,3)
+        preset_row.addWidget(save)
+        preset_row.addWidget(remove)
+        one.addLayout(preset_row)
         self.source=QLineEdit()
-        self.source.setPlaceholderText("Selecciona un archivo de audio…")
+        self.source.setPlaceholderText("Selecciona un audio…")
+        self.source.setToolTip("Ruta del audio de origen")
         self.choose=QPushButton("Importar…")
-        one.addLayout(row(QLabel("Audio"),self.source,self.choose))
+        audio_row=QHBoxLayout()
+        audio_row.setContentsMargins(0,0,0,0)
+        audio_row.setSpacing(4)
+        audio_row.addWidget(QLabel("Audio"))
+        audio_row.addWidget(self.source,1)
+        audio_row.addWidget(self.choose)
+        one.addLayout(audio_row)
         self.models=QComboBox()
         self.models.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
-        self.models.setMinimumWidth(260)
-        load=QPushButton("Cargar modelo IA…")
-        one.addLayout(row(QLabel("Modelo"),self.models,load))
-        base.addWidget(top,0)
+        self.models.setMinimumWidth(95)
+        load=QPushButton("Cargar IA…")
+        model_row=QHBoxLayout()
+        model_row.setContentsMargins(0,0,0,0)
+        model_row.setSpacing(4)
+        model_row.addWidget(QLabel("Modelo"))
+        model_row.addWidget(self.models,1)
+        model_row.addWidget(load)
+        one.addLayout(model_row)
+
+        # Segunda etapa vocal, en lugar de la lista de stems duplicada:
+        # las seis casillas del VU inferior SON ahora mute en tiempo real.
+        from vocal_split_stems import VocalSplitJob,MODES
+        self.voice_task=VocalSplitJob(self.root)
+        top_area=QHBoxLayout()
+        top_area.setSpacing(8)
+        top_area.addWidget(top,46)
+        stems_panel,stems_body=panel()
+        stems_body.setContentsMargins(9,6,9,6)
+        stems_body.setSpacing(3)
+        stems_body.addWidget(head("VOCES · SOLISTA / COROS"))
+        self.voice_settings=QSettings("StemMIDI Studio","SeparacionVocal")
+        self.voice_input=QLabel("Entrada: Voces del proyecto",stems_panel)
+        self.voice_input.setObjectName("muted")
+        stems_body.addWidget(self.voice_input)
+        # El estado del origen permanece en el tooltip para dejar altura
+        # a los resultados sin solapar controles en un panel compacto.
+        self.voice_input.hide()
+        self.voice_mode=QComboBox(stems_panel)
+        for key,(name,filename) in MODES.items():
+            self.voice_mode.addItem(name,key)
+        self.voice_mode.setToolTip(
+            "Principal/coros: modelo Karaoke sobre la voz extraída. "
+            "Masculina/femenina: separa voces por timbre; no garantiza cada cantante.")
+        stems_body.addWidget(self.voice_mode)
+        # Parámetros REALES, conectados a audio-separator, no decorativos.
+        params=QHBoxLayout()
+        params.setContentsMargins(0,0,0,0)
+        params.setSpacing(4)
+        params.addWidget(QLabel("Detalle"))
+        self.voice_detail=QComboBox(stems_panel)
+        self.voice_detail.addItem("Normal",8)
+        self.voice_detail.addItem("Alto",16)
+        self.voice_detail.setToolTip(
+            "Solapamiento MDXC: alto procesa más ventanas y tarda más.")
+        self.voice_detail.setFixedWidth(83)
+        params.addWidget(self.voice_detail)
+        params.addWidget(QLabel("Formato"))
+        self.voice_format=QComboBox(stems_panel)
+        for fmt in ("FLAC","WAV","MP3"):self.voice_format.addItem(fmt)
+        self.voice_format.setFixedWidth(76)
+        params.addWidget(self.voice_format)
+        params.addWidget(QLabel("Refuerzo"))
+        self.voice_boost=QDoubleSpinBox(stems_panel)
+        self.voice_boost.setDecimals(2)
+        self.voice_boost.setSingleStep(.05)
+        self.voice_boost.setRange(0.,.30)
+        self.voice_boost.setToolTip(
+            "Amplificación mínima de audio (--amplification), NO identifica cantantes.")
+        self.voice_boost.setFixedWidth(65)
+        params.addWidget(self.voice_boost)
+        self.voice_auto_preview=QCheckBox("Auto",stems_panel)
+        self.voice_auto_preview.setToolTip(
+            "Al completar, reproducir automáticamente la primera pista vocal.")
+        params.addWidget(self.voice_auto_preview)
+        stems_body.addLayout(params)
+        saved_mode=self.voice_settings.value("mode","lead_backing")
+        index=self.voice_mode.findData(saved_mode)
+        if index>=0:self.voice_mode.setCurrentIndex(index)
+        quality_index=self.voice_detail.findData(
+            int(self.voice_settings.value("overlap",8)))
+        if quality_index>=0:self.voice_detail.setCurrentIndex(quality_index)
+        fmt_index=self.voice_format.findText(
+            str(self.voice_settings.value("format","FLAC")))
+        if fmt_index>=0:self.voice_format.setCurrentIndex(fmt_index)
+        self.voice_boost.setValue(float(self.voice_settings.value("boost",0.)))
+        self.voice_auto_preview.setChecked(
+            str(self.voice_settings.value("autoplay","false")).lower()=="true")
+        for control in (self.voice_mode,self.voice_detail,self.voice_format):
+            control.currentIndexChanged.connect(self.save_voice_preferences)
+        self.voice_boost.valueChanged.connect(self.save_voice_preferences)
+        self.voice_auto_preview.toggled.connect(self.save_voice_preferences)
+        controls=QHBoxLayout()
+        controls.setContentsMargins(0,0,0,0)
+        controls.setSpacing(3)
+        self.voice_start=QPushButton("Separar voces",stems_panel)
+        self.voice_start.setObjectName("primary")
+        controls.addWidget(self.voice_start,1)
+        self.voice_install=QPushButton("IA",stems_panel)
+        self.voice_install.setToolTip("Instalar el modelo vocal elegido cuando no exista.")
+        controls.addWidget(self.voice_install)
+        self.voice_cancel=QPushButton("■",stems_panel)
+        self.voice_cancel.setFixedWidth(28)
+        self.voice_cancel.setToolTip("Detener la separación vocal.")
+        controls.addWidget(self.voice_cancel)
+        stems_body.addLayout(controls)
+        self.voice_status=QLabel("",stems_panel)
+        self.voice_status.setObjectName("muted")
+        self.voice_status.setWordWrap(False)
+        self.voice_status.setFixedHeight(16)
+        self.voice_status.setToolTip("Estado y progreso de la IA vocal")
+        self.voice_results=[]
+        result_row=QHBoxLayout()
+        result_row.setContentsMargins(0,0,0,0)
+        result_row.setSpacing(4)
+        result_row.addWidget(self.voice_status,1)
+        for i in range(2):
+            button=QPushButton("▶ Voz "+str(i+1),stems_panel)
+            button.setFixedHeight(21)
+            button.setToolTip("Escuchar pista vocal separada, sin alterar la original.")
+            button.hide()
+            result_row.addWidget(button,1)
+            button.clicked.connect(
+                lambda checked=False,slot=i:self.preview_vocal_result(slot))
+            self.voice_results.append(button)
+        stems_body.addLayout(result_row)
+        self.voice_note=QLabel("Voces del mismo género / ≥3: IA especializada.",stems_panel)
+        self.voice_note.setObjectName("muted")
+        self.voice_note.setToolTip(
+            "Esta IA no separa automáticamente cantantes del mismo género "
+            "ni tres o más voces solapadas.")
+        stems_body.addWidget(self.voice_note)
+        self.voice_note.hide()
+        stems_panel.setToolTip(
+            "La separación no identifica automáticamente a cada cantante "
+            "cuando hay tres o más voces o dos cantantes del mismo género.")
+        self.voice_start.clicked.connect(self.start_vocal_split)
+        self.voice_install.clicked.connect(self.install_vocal_model)
+        self.voice_cancel.clicked.connect(self.voice_task.stop)
+        self.voice_task.status.connect(self.voice_status.setText)
+        self.voice_task.busyChanged.connect(
+            lambda busy:self.refresh_voice_controls())
+        self.voice_task.ready.connect(self.vocal_results_ready)
+        self.voice_mode.currentIndexChanged.connect(
+            lambda _:self.refresh_voice_controls())
+        stems_panel.setMinimumHeight(184)
+        top_area.addWidget(stems_panel,54)
+        base.addLayout(top_area,0)
 
         # Segunda fila: stems y ajustes de calidad auténticos.
         middle=QHBoxLayout()
         middle.setSpacing(9)
         left,one=panel()
+        one.setSpacing(3)
         one.addWidget(head("02 · PISTAS A EXTRAER"))
         self.all_stems=QCheckBox("Todos los instrumentos disponibles")
         one.addWidget(self.all_stems)
         controls=QGridLayout()
-        controls.setSpacing(6)
+        controls.setHorizontalSpacing(5)
+        controls.setVerticalSpacing(0)
         self.stems={}
         for i,name in enumerate(LABELS):
             chk=QCheckBox(name)
@@ -142,17 +297,29 @@ class ExpandedSeparator:
         self.rate.addItems(("44100","48000"))
         self.listen=QComboBox()
         self.listen.addItems(("Estéreo","Mono (L+R)","Solo izquierdo","Solo derecho"))
-        one.addLayout(row(QLabel("Calidad"),self.quality))
-        one.addLayout(row(QLabel("Formato"),self.fmt))
-        one.addLayout(row(QLabel("Frecuencia"),self.rate))
-        one.addLayout(row(QLabel("Escucha"),self.listen))
+        options_one=QHBoxLayout()
+        options_one.setSpacing(6)
+        options_one.addWidget(QLabel("Calidad"))
+        options_one.addWidget(self.quality,1)
+        options_one.addWidget(QLabel("Formato"))
+        options_one.addWidget(self.fmt,1)
+        one.addLayout(options_one)
+        options_two=QHBoxLayout()
+        options_two.setSpacing(6)
+        options_two.addWidget(QLabel("Frecuencia"))
+        options_two.addWidget(self.rate,1)
+        options_two.addWidget(QLabel("Escucha"))
+        options_two.addWidget(self.listen,1)
+        one.addLayout(options_two)
         middle.addWidget(right,56)
-        base.addLayout(middle,2)
+        base.addLayout(middle,1)
 
         # Tercera fila: procesado real y progreso observable.
         bottom=QHBoxLayout()
         bottom.setSpacing(9)
         proc,one=panel()
+        one.setContentsMargins(10,5,10,5)
+        one.setSpacing(3)
         one.addWidget(head("04 · PROCESAR AUDIO"))
         self.run=QPushButton("▶ Separar pistas")
         self.run.setObjectName("primary")
@@ -168,6 +335,8 @@ class ExpandedSeparator:
         one.addWidget(self.progress)
         bottom.addWidget(proc,45)
         process,one=panel()
+        one.setContentsMargins(10,5,10,5)
+        one.setSpacing(3)
         one.addWidget(head("05 · ESTADO Y PROGRESO"))
         self.progress_state=QLabel("En espera")
         self.progress_state.setWordWrap(True)
@@ -177,7 +346,7 @@ class ExpandedSeparator:
         self.stem_status.setWordWrap(True)
         one.addWidget(self.stem_status)
         bottom.addWidget(process,55)
-        base.addLayout(bottom,1)
+        base.addLayout(bottom,0)
         self.root.hide()
         self.card.inner.insertWidget(0,self.root,1)
 
@@ -285,10 +454,111 @@ class ExpandedSeparator:
             return
         self.sep.start_separation()
 
+    def save_voice_preferences(self,*_):
+        self.voice_settings.setValue("mode",self.voice_mode.currentData())
+        self.voice_settings.setValue("overlap",self.voice_detail.currentData())
+        self.voice_settings.setValue("format",self.voice_format.currentText())
+        self.voice_settings.setValue("boost",self.voice_boost.value())
+        self.voice_settings.setValue("autoplay",self.voice_auto_preview.isChecked())
+
+    def refresh_voice_controls(self):
+        from vocal_split_stems import VocalSplitJob
+        mode=self.voice_mode.currentData()
+        voice=self.home._sep_listen.available().get("Voces")
+        self.voice_input.setText(
+            "Voz separada disponible" if voice is not None
+            else "Primero extrae Voces")
+        self.voice_mode.setToolTip(
+            ("Origen: "+str(voice) if voice else "Primero extrae Voces")
+            +" · El modelo RoFormer separa principal y resto vocal; "
+            "no garantiza identidades individuales.")
+        ready=bool(mode and VocalSplitJob.installed(mode))
+        busy=self.voice_task.busy
+        self.voice_mode.setEnabled(not busy)
+        self.recover_voice_results(mode,busy)
+        self.voice_start.setEnabled(bool(voice) and ready and not busy)
+        self.voice_install.setEnabled(bool(mode) and not ready and not busy)
+        self.voice_install.setText("IA ✓" if ready else "Instalar IA")
+        self.voice_cancel.setEnabled(busy)
+        state=(mode,ready,bool(voice))
+        if not busy and getattr(self,"_vocal_status_state",None)!=state:
+            self._vocal_status_state=state
+            self.voice_status.setText(
+                "Modelo preparado" if ready
+                else "Modelo no instalado · pulsa Instalar IA")
+
+    def recover_voice_results(self,mode,busy):
+        project=getattr(self.home.main,"project_dir",None)
+        signature=(str(Path(project).resolve()) if project else "",mode)
+        if signature==getattr(self,"_vocal_recovery_signature",None):
+            return
+        if busy:return
+        self._vocal_recovery_signature=signature
+        self._voice_paths=[]
+        for button in self.voice_results:button.hide()
+        self.voice_note.hide()
+        if not project or mode not in ("lead_backing","male_female"):return
+        root=Path(project)/"temporales"/"voces"
+        folders=[root/mode] + sorted(root.glob(mode+"_*"),
+                                    key=lambda p:p.stat().st_mtime if p.is_dir() else 0,
+                                    reverse=True) if root.is_dir() else []
+        for folder in folders:
+            if not folder.is_dir():continue
+            found=sorted(p for p in folder.iterdir()
+                         if p.is_file() and p.suffix.lower() in (".wav",".flac",".mp3")
+                         and p.stat().st_size>1024)
+            if len(found)>=2:
+                self.vocal_results_ready([str(p) for p in found[:2]],autoplay=False)
+                return
+
+    def install_vocal_model(self):
+        mode=self.voice_mode.currentData()
+        if mode:self.voice_task.download(mode)
+
+    def start_vocal_split(self):
+        mode=self.voice_mode.currentData()
+        if mode and self.voice_task.separate(
+                self.home,mode,output_format=self.voice_format.currentText(),
+                overlap=self.voice_detail.currentData(),
+                amplification=self.voice_boost.value()):
+            for button in self.voice_results:button.hide()
+
+    def vocal_results_ready(self,paths,autoplay=True):
+        self._voice_paths=[Path(p) for p in paths if Path(p).is_file()]
+        # Publicar en Resultados, selector de Audio a MIDI y mute/VU inferior.
+        if self._voice_paths:self.home.refresh(force=True)
+        for i,button in enumerate(self.voice_results):
+            if i>=len(self._voice_paths):
+                button.hide()
+                continue
+            path=self._voice_paths[i]
+            label=path.stem.casefold()
+            name=("Coros / acompañamiento" if "(instrumental)" in label else
+                  "Voz principal" if "(vocals)" in label else
+                  "Voz femenina" if "(female)" in label else
+                  "Voz masculina" if "(male)" in label else path.stem[:24])
+            short=("Coros" if name.startswith("Coros") else
+                   "Principal" if name=="Voz principal" else
+                   "Femenina" if name=="Voz femenina" else
+                   "Masculina" if name=="Voz masculina" else name)
+            button.setText("▶ "+short)
+            button.setToolTip(name+" · "+str(path))
+            button.show()
+        self.voice_note.hide()
+        if autoplay and self.voice_auto_preview.isChecked():
+            QTimer.singleShot(0,lambda:self.preview_vocal_result(0))
+
+    def preview_vocal_result(self,index):
+        paths=getattr(self,"_voice_paths",[])
+        if 0<=index<len(paths) and paths[index].is_file():
+            self.home._sep_listen.stop()
+            self.home.player.load(paths[index],autoplay=True)
+
     def refresh(self):
         if not self.root.isVisible():return
         self._updating=True
         try:
+            self.refresh_voice_controls()
             self.refresh_presets()
             current=self.sep.profile.currentText()
             if (self.models.count()!=self.sep.profile.count()
@@ -351,8 +621,9 @@ class ExpandedSeparator:
                 ("Separando audio" if self.sep.busy else "En espera")+
                 " · "+self.sep.elapsed.text())
             requested=getattr(self.sep,"active_request",[])
-            found={__import__("separation_pro_controls").instrument_for(p)
-                   for p in self.sep.latest_outputs}
+            found={MAP.get(name,name)
+                   for name,path in self.home._sep_listen.available().items()
+                   if name!="Original" and path is not None}
             self.stem_status.setText(" · ".join(
                 f"{stem}: {'Listo' if stem in found else 'En proceso' if self.sep.busy else 'Pendiente'}"
                 for stem in (requested or allowed)))

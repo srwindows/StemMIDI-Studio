@@ -565,6 +565,7 @@ def project_payload(main):
       "drum_files":[str(p) for p in w.drum_storage.items],
       "vocal_files":[str(p) for p in w.vocal_storage.items],
       "mixer_levels":{name:parts["fader"].value() for name,parts in home.mixer_rows.items()},
+      "home_workspace":home.home_workspace.snapshot(),
       "stem_visibility":dict(home._stem_selection),
       "notice":"Las grabaciones y MIDI originales no se incluyen en este archivo."
     }
@@ -579,46 +580,128 @@ def save_project(main,show_confirmation=True):
             "Crea o abre un proyecto con nombre para guardar todos sus archivos. "
             "También puedes usar «Guardar como…».")
         return False
+    progress=None
     try:
         if main.recording or main.record_pending:
             raise ValueError("Finaliza la grabación antes de guardar el proyecto.")
         wb=main.workbench
+        audio_converter=getattr(getattr(main,"studio_home",None),"midi_to_audio",None)
         if (wb.separator.busy or wb.converter.process is not None
                 or main.drum_module.process is not None
                 or main.vocal_module.process is not None
-                or main.recording_lab.process is not None):
+                or main.recording_lab.process is not None
+                or (audio_converter is not None and audio_converter.busy)):
             raise ValueError("Espera a que termine el procesamiento activo.")
-        # Edición en memoria: materializar la versión MIDI en el directorio
-        # temporal existente antes de registrar el manifiesto.
+        # Contar los bytes físicos ANTES de copiar para calcular el
+        # porcentaje sobre trabajo REAL, no sobre un QTimer.
+        from project_transaction import commit_staged,commit_edited_midi,begin,_staged
+        from project_progress import ProjectProgress
+        staged=list(_staged(project))
+        from safe_file_delete import pending_deletions
+        deletion_total=len(pending_deletions(project))
+        progress=ProjectProgress(main,"Guardando proyecto",
+            steps=12+deletion_total,
+            media_sizes=[path.stat().st_size for _,path in staged])
+        progress.allow_cancel(True)
+        progress.stage("Grabación y procesos comprobados")
+        saved_prior={}
+        if main.project_path and Path(main.project_path).is_file():
+            try:
+                saved_prior=json.loads(Path(main.project_path).read_text(
+                    encoding="utf-8")).get("committed_outputs",{})
+            except (OSError,ValueError,TypeError):
+                saved_prior={}
+        # Exportaciones individuales y Guardar proyecto comparten el
+        # destino conocido: nunca duplicar como stem.mid / stem_2.mid.
+        from task_staging import inside
+        for store in (wb.separation_storage,wb.midi_storage,
+                      wb.drum_storage,wb.vocal_storage):
+            for source,target in store.saved_exports.items():
+                source_path=Path(source)
+                target_path=Path(target)
+                if (inside(source_path,Path(project)/"temporales")
+                    and inside(target_path,project)
+                    and not inside(target_path,Path(project)/"temporales")
+                    and target_path.is_file()):
+                    saved_prior[source_path.relative_to(project).as_posix()]=(
+                        target_path.relative_to(project).as_posix())
+        progress.stage("Destinos y exportaciones anteriores identificados")
+        promoted,commit_index=commit_staged(project,saved_prior,progress=progress)
+        # Después de promover los archivos empieza la confirmación crítica
+        # del manifiesto, Piano Roll y eliminaciones. No interrumpir a medias.
+        progress.allow_cancel(False)
+        progress.stage(f"{len(promoted)} medios procesados y verificados")
+        # El Piano Roll guarda sobre el MISMO MIDI del proyecto, con una
+        # sola copia recuperable en backup/MIDI_anterior.
         if wb.piano.dirty and wb.piano.midi is not None:
-            from uuid import uuid4
-            folder=project/"temporales"/"midi"
-            folder.mkdir(parents=True,exist_ok=True)
-            edited=folder/("_piano_nuevo_"+uuid4().hex+".mid")
-            stable=folder/"piano_roll_sesion.mid"
-            wb.piano.save_file(edited)
-            # Guardar sustituye solo el resultado de trabajo propio, no
-            # los MIDI originales importados ni los exportados.
-            edited.replace(stable)
-            wb.piano.current_path=stable
-            wb.piano.preview.load(stable)
+            commit_edited_midi(wb.piano,project)
+        progress.stage("Ediciones del Piano Roll verificadas")
         path=Path(main.project_path) if main.project_path else (
             project/(__import__("project_flow").slug_name(main.project_name)+".stemstudio.json"))
         if path.parent.resolve()!=project.resolve():
             raise ValueError("El manifiesto debe permanecer dentro del proyecto.")
+        progress.stage("Ubicación del manifiesto validada")
+        from project_transaction import rebase_payload,finish_commit
         payload=prepare_payload(project,project_payload(main))
+        payload=rebase_payload(payload,promoted,project)
+        # El índice de medios debe reflejar lo guardado, no rutas temporales
+        # que se retiran tras confirmar la operación.
+        if isinstance(payload.get("project_files"),list):
+            payload["project_files"]=list(dict.fromkeys(
+                promoted.get(entry,entry) for entry in payload["project_files"]))
+        payload["committed_outputs"]=commit_index
+        from safe_file_delete import pending_deletions
+        from project_transaction import prune_deleted_payload,prune_deleted_runtime
+        deleted_paths=[item["original"] for item in pending_deletions(project)]
+        payload=prune_deleted_payload(payload,project)
+        progress.stage("Estado de los módulos y eliminaciones reconciliado")
+        # Un único archivo de recuperación anterior, sin crear ZIP en cada
+        # apertura. El respaldo se actualiza SOLO al pulsar Guardar.
+        if path.exists():
+            from project_transaction import _atomic_copy
+            _atomic_copy(path,project/"backup"/"Recuperacion_Anterior.stemstudio.json")
+        progress.stage("Copia de recuperación comprobada")
         atomic_json(path,payload)
+        progress.stage("Manifiesto de proyecto escrito")
         main.project_path=path
+        # Ahora sí: el usuario ha confirmado Guardar; materializar las
+        # eliminaciones en la papelera. Sin Guardar quedan en cuarentena.
+        from safe_file_delete import finalize_deletions
+        finalize_deletions(project,progress=progress)
+        progress.stage(f"{deletion_total} eliminaciones confirmadas")
+        prune_deleted_runtime(main,deleted_paths)
+        finish_commit(main,promoted)
+        progress.stage("Referencias y copias temporales reconciliadas")
+        # Sólo tras guardar correctamente se registran ajustes globales.
+        main._explicit_save=True
+        try:
+            main.save_config()
+            wb.converter.save_preferences()
+            wb.separator.save_preferences()
+        finally:
+            main._explicit_save=False
+        progress.stage("Preferencias de módulos almacenadas")
+        begin(main)
+        progress.stage("Sesión de trabajo confirmada")
+        progress.complete("Proyecto guardado y verificado")
+        progress.close()
+        progress=None
         if show_confirmation:
             from project_status_dialog import show_project_status
             show_project_status(main,project,path,action="guardado")
         return True
+    except __import__("project_progress").OperationCancelled:
+        QMessageBox.information(main,"Guardado cancelado",
+            "No se ha confirmado el proyecto. Los medios anteriores están restaurados.")
+        return False
     except (OSError,ValueError,TypeError) as exc:
         QMessageBox.warning(main,"No se pudo guardar",str(exc))
         return False
+    finally:
+        if progress is not None:progress.close()
 
 
-def save_project_as(main):
+def save_project_as(main,show_confirmation=True):
     """Guardar como: copia independiente con nombre y carpeta elegidos."""
     from project_session import clone_project
     from project_flow import project_directory
@@ -632,17 +715,37 @@ def save_project_as(main):
     folder=file_dialogs.get_existing_directory(main,
         "Elige dónde guardar el nuevo proyecto",str(project.parent))
     if not folder:return False
+    progress=None
     try:
-        if not save_project(main,show_confirmation=False):return False
-        target=clone_project(project,folder,name.strip())
-        # Conservar el proyecto actualmente abierto; la copia puede abrirse
-        # con «Abrir proyecto». No se cambia silenciosamente la sesión.
-        from project_status_dialog import show_project_status
-        show_project_status(main,target.parent,target,action="guardado_como")
+        # Guardar como copia bytes realmente transferidos a otro proyecto.
+        from project_progress import ProjectProgress
+        source_files=[f for f in project.rglob("*") if f.is_file()]
+        progress=ProjectProgress(main,"Guardando copia del proyecto",steps=7,
+                    media_sizes=[f.stat().st_size for f in source_files])
+        progress.allow_cancel(True)
+        target=clone_project(project,folder,name.strip(),progress=progress)
+        from project_transaction import save_clone_snapshot
+        progress.message("Consolidando las ediciones de la copia nueva…")
+        save_clone_snapshot(main,project,target,name.strip())
+        progress.stage("Ediciones y resultados de la copia consolidados")
+        progress.stage("Copia guardada y verificada")
+        progress.complete("Proyecto duplicado correctamente")
+        progress.close()
+        progress=None
+        # La sesión original sigue abierta con sus cambios sin guardar.
+        if show_confirmation:
+            from project_status_dialog import show_project_status
+            show_project_status(main,target.parent,target,action="guardado_como")
         return True
+    except __import__("project_progress").OperationCancelled:
+        QMessageBox.information(main,"Copia cancelada",
+            "La copia no se ha terminado y el proyecto original sigue intacto.")
+        return False
     except (OSError,ValueError,TypeError) as exc:
         QMessageBox.warning(main,"No se pudo guardar como",str(exc))
         return False
+    finally:
+        if progress is not None:progress.close()
 
 
 def revert_project_backup(main):
@@ -696,45 +799,65 @@ def revert_project_backup(main):
         return False
 
 def _protect_unsaved_project(main):
-    """Antes de cambiar/cerrar, permitir copia segura de tareas pendientes."""
-    w=main.workbench
-    stores=(w.separation_storage,w.midi_storage,w.drum_storage,w.vocal_storage)
-    pending=[store for store in stores if store.pending]
-    if not pending:return True
+    """Un solo diálogo: Guardar, Descarta o Cancelar al cambiar proyecto.
+
+    Nunca publicar pistas porque el usuario decida cerrar otro proyecto.
+    """
+    converter=getattr(getattr(main,"studio_home",None),"midi_to_audio",None)
+    if converter is not None and converter.busy:
+        QMessageBox.information(main,"Conversión MIDI a audio",
+            "Cancela o finaliza la conversión antes de cambiar de proyecto.")
+        return False
     project=getattr(main,"project_dir",None)
-    if project:
-        ans=QMessageBox.question(main,"Resultados aún no guardados",
-            "Hay resultados temporales pendientes.\n\n"
-            "SÍ: guardar todas las pistas en la carpeta de su módulo.\n"
-            "NO: cerrar sin guardarlas (permanecerán recuperables como temporales).\n"
-            "CANCELAR: permanecer en este proyecto.",
-            QMessageBox.Yes|QMessageBox.No|QMessageBox.Cancel,
-            QMessageBox.Cancel)
-        if ans==QMessageBox.Cancel:return False
-        if ans==QMessageBox.No:return True
-        try:
-            for store in pending:
-                files=store.save(Path(project)/"backup"/store.kind,all_files=True)
-                if not files:raise ValueError("Faltan archivos en la tarea "+store.kind)
-            return True
-        except (OSError,ValueError) as exc:
-            QMessageBox.warning(main,"No se pudo crear backup",str(exc))
-            return False
-    if main.project_path is None:
-        ans=QMessageBox.question(main,"Proyecto sin guardar",
-            "Este proyecto contiene resultados temporales. Guarda el proyecto "
-            "antes de cambiarlo o cerrarlo para poder recuperar sus resultados. "
-            "¿Quieres guardar el proyecto ahora?",
-            QMessageBox.Yes|QMessageBox.Cancel,QMessageBox.Yes)
-        if ans!=QMessageBox.Yes:return False
-        return save_project(main)
-    return True
+    if not project:return True
+    w=main.workbench
+    pending=any(store.pending for store in (
+        w.separation_storage,w.midi_storage,w.drum_storage,w.vocal_storage))
+    pending|=bool(w.piano.dirty)
+    from safe_file_delete import pending_deletions
+    pending|=bool(pending_deletions(project))
+    # También deben ser reversibles los cambios de parámetros SIN media.
+    try:
+        manifest=json.loads(Path(main.project_path).read_text(encoding="utf-8"))
+        current=project_payload(main)
+        tracked=("parameters_midi","parameters_separation",
+                 "parameters_monitor","parameters_recording_lab",
+                 "parameters_vocal_full","parameters_drum_editor",
+                 "parameters_drum_full","parameters_piano_view",
+                 "parameters_mixer","stem_visibility","home_workspace")
+        pending|=any(current.get(key)!=manifest.get(key) for key in tracked)
+    except (OSError,ValueError,TypeError,AttributeError):
+        pending=True
+    # Al cerrar o sustituir un proyecto se pide siempre la elección.
+    decision=QMessageBox.question(
+        main,"Cambios sin guardar del proyecto",
+        "Hay parámetros, MIDI o resultados provisionales que aún no has "
+        "guardado.\n\n"
+        "Sí: guardar los cambios en sus carpetas definitivas.\n"
+        "No: descartar lo nuevo de esta sesión, sin tocar lo ya guardado.\n"
+        "Cancelar: continuar trabajando en este proyecto.",
+        QMessageBox.Yes|QMessageBox.No|QMessageBox.Cancel,
+        QMessageBox.Cancel)
+    if decision==QMessageBox.Cancel:return False
+    if decision==QMessageBox.Yes:
+        return save_project(main,show_confirmation=False)
+    from project_transaction import discard
+    try:
+        discard(main)
+        # El editor de Piano Roll mantiene notas sin guardar en memoria.
+        # El usuario ya eligió expresamente descartarlas.
+        w.piano.dirty=False
+        return True
+    except (OSError,ValueError) as exc:
+        QMessageBox.warning(main,"No se pudo descartar",str(exc))
+        return False
 
 def open_project(main,path=None):
     if path is None:
         path,_=file_dialogs.get_open_file_name(main,"Abrir proyecto StemMIDI",str(Path.home()),
                                     "Proyecto StemMIDI (*.stemstudio.json *.json)")
     if not path:return False
+    progress=None
     try:
         data=json.loads(Path(path).read_text(encoding="utf-8"))
         if data.get("application")!="StemMIDI Studio":
@@ -754,13 +877,24 @@ def open_project(main,path=None):
                       if project_name else ()
         named=(bool(project_name) and candidate.name in allowed_names)
         project_dir=candidate.parent if named else None
-        # Copia verificable de TODO el proyecto (excepto backup) cada
-        # vez que se abre, antes de tocar los ajustes. Si falla, cancelar.
+        # Porcentaje de 18 secciones reales de apertura/restauración.
+        # Cada avance se registra DESPUÉS de completar la sección,
+        # independientemente de los segundos transcurridos.
+        from project_progress import ProjectProgress
+        progress=ProjectProgress(main,"Abriendo proyecto",steps=18)
+        progress.stage("Manifiesto leído y validado")
+        # Abrir no debe generar otro ZIP gigantesco cada vez.
+        # El directorio backup recibe únicamente las revisiones necesarias
+        # cuando se confirma la sobrescritura de un MIDI.
+        # Recuperar eliminaciones pendientes de una sesión interrumpida
+        # ANTES de que TaskStorage reconstruya el inventario de pistas.
         if project_dir is not None:
-            from project_session import snapshot_on_open
-            snapshot_on_open(project_dir)
+            from safe_file_delete import rollback_deletions
+            rollback_deletions(project_dir)
+        progress.stage("Eliminaciones pendientes revisadas")
         if not main.workbench.switch_project(project_id,project_dir):
             return False
+        progress.stage("Inventarios y tareas del proyecto vinculados")
         main.project_dir=project_dir
         main.project_name=str(data.get("project_name") or "") or None
         main.project_path=candidate
@@ -770,8 +904,11 @@ def open_project(main,path=None):
                                         "main").RECORDINGS)))
         main.folder_display.setReadOnly(bool(project_dir))
         main.workbench.bind_project(project_dir)
+        # Al cambiar de proyecto no heredar el tablero del anterior.
+        main.studio_home.home_workspace.reset_for_project()
         main.file_prefix.setText(__import__("project_flow").slug_name(
             main.project_name or "Grabacion"))
+        progress.stage("Rutas y nombre del proyecto restaurados")
         main.setWindowTitle("StemMIDI Studio · "+str(main.project_name)
                             if main.project_name else "StemMIDI Studio")
         main.project_recordings=[str(Path(v)) for v in data.get("recordings",[])
@@ -784,6 +921,7 @@ def open_project(main,path=None):
             main.record_preview.load(main.last_file)
         else:
             main.record_preview.clear()
+        progress.stage("Grabaciones y monitor de audio restaurados")
         w=main.workbench
         if data.get("drum_input") and Path(data["drum_input"]).is_file():
             main.drum_module.input.setText(data["drum_input"])
@@ -803,6 +941,7 @@ def open_project(main,path=None):
         if "drum_bars" in data:
             position=drums.seq_bars.findData(int(data["drum_bars"]))
             if position>=0:drums.seq_bars.setCurrentIndex(position)
+        progress.stage("Pistas y parámetros de batería cargados")
         if "vocal_tonic" in data:
             main.vocal_module.tonic.setCurrentIndex(max(0,min(11,int(data["vocal_tonic"]))))
         if data.get("vocal_scale"):
@@ -835,8 +974,10 @@ def open_project(main,path=None):
         if data.get("vocal_character") in ("Natural","Dulce","Rasgada","Cálida","Aireada"):
             main.vocal_module.character.setCurrentText(data["vocal_character"])
         main.vocal_module.bypass_tune.setChecked(bool(data.get("vocal_bypass_tune",False)))
+        progress.stage("Afinación vocal y controles restaurados")
         if isinstance(data.get("parameters_monitor"),dict):
             main.monitor_preset_apply(data["parameters_monitor"])
+        progress.stage("Ajustes de monitorización aplicados")
         lab=main.recording_lab
         if isinstance(data.get("parameters_recording_lab"),dict):
             lab.apply_preset(data["parameters_recording_lab"])
@@ -850,20 +991,24 @@ def open_project(main,path=None):
             lab.processed=Path(processed)
             lab.play_processed.setEnabled(True)
             lab.export_button.setEnabled(True)
+        progress.stage("Laboratorio de audio y tomas verificadas")
         if isinstance(data.get("parameters_drum_editor"),dict):
             drums.apply_editor_preset(data["parameters_drum_editor"])
         if isinstance(data.get("parameters_vocal_full"),dict):
             main.vocal_module.apply_full_preset(data["parameters_vocal_full"])
         if isinstance(data.get("parameters_piano_view"),dict):
             w.piano.apply_view_preset(data["parameters_piano_view"])
+        progress.stage("Presets de batería, voz y Piano Roll aplicados")
         if isinstance(data.get("parameters_midi"),dict):
             w.converter.apply_parameters(data["parameters_midi"])
         if isinstance(data.get("parameters_separation"),dict):
             w.separator.apply_parameters(data["parameters_separation"])
+        progress.stage("Parámetros de separación y transcripción cargados")
         for key,handler in (("source_separation",w.separator.on_import_selected),
                             ("source_midi",w.converter.on_import_file)):
             source=data.get(key)
             if source and Path(source).is_file():handler(str(source))
+        progress.stage("Fuentes de audio de los módulos comprobadas")
         # El modo de conversión por carpetas se restaura DESPUÉS del audio
         # individual: on_import_file() lo desactiva cuando cambia la fuente.
         midi_folder=data.get("midi_source_folder")
@@ -886,6 +1031,7 @@ def open_project(main,path=None):
         main.set_input_processing(
             data.get("input_gain_db",main.input_gain_db),
             data.get("input_balance",main.input_balance))
+        progress.stage("Formatos de grabación y entradas recuperados")
         for name,value in data.get("mixer_levels",{}).items():
             if name in main.studio_home.mixer_rows:
                 main.studio_home.mixer_rows[name]["fader"].setValue(int(value))
@@ -901,27 +1047,53 @@ def open_project(main,path=None):
             w.show_mixer(mixer_sources)
             if w.mixer is not None and isinstance(data.get("parameters_mixer"),dict):
                 w.mixer.apply_preset(data["parameters_mixer"])
+        progress.stage("Mezclador y pistas de audio restaurados")
         # El MIDI original o editado se restaura en Piano Roll, con sus
         # ajustes de visualización ya aplicados.
         midi_editor=data.get("midi_editor_file")
         if isinstance(midi_editor,str) and Path(midi_editor).is_file():
-            w.show_piano_roll(midi_editor)
-            if isinstance(data.get("parameters_piano_view"),dict):
-                w.piano.apply_view_preset(data["parameters_piano_view"])
+            # Restaurar el EDITOR y sus notas, sin navegar a su pestaña:
+            # show_piano_roll() llama setCurrentWidget(piano) y hacía
+            # que todo proyecto con MIDI arrancase fuera de Inicio.
+            if w.piano.open_midi(midi_editor) is not False:
+                w.apply_button.setEnabled(True)
+                if isinstance(data.get("parameters_piano_view"),dict):
+                    w.piano.apply_view_preset(data["parameters_piano_view"])
+        progress.stage("Piano Roll y MIDI editados recuperados")
         main.workbench.converter.refresh_project_stems()
-        __import__("project_flow").route_approved(main)
+        __import__("project_flow").route_approved(main,refresh=False)
+        # Al abrir, un único refresco al final. route_approved ya ha
+        # vinculado Batería/Voces; repetir la reconstrucción duplicaba
+        # ffprobe, inventario de stems y ondas grandes.
         main.studio_home.refresh(force=True)
+        progress.stage("Stems y resultados interconectados")
+        from project_transaction import begin
+        begin(main)
+        progress.stage("Sesión de trabajo y recuperación preparadas")
         midi=data.get("selected_midi")
         if midi and Path(midi).is_file():
             for i in range(main.studio_home.midi_choice.count()):
                 if main.studio_home.midi_choice.itemData(i)==str(midi):
                     main.studio_home.midi_choice.setCurrentIndex(i)
+        progress.stage("Selección MIDI inicial restaurada")
+        progress.complete("Proyecto abierto y verificado")
+        progress.close()
+        progress=None
+        # Posiciones de los 12 módulos y ventanas flotantes: cada
+        # proyecto recupera SOLO su disposición guardada. Los proyectos
+        # antiguos sin esta clave siguen usando el Inicio original.
+        main.studio_home.home_workspace.restore(data.get("home_workspace"))
+        # El destino visual de la apertura es SIEMPRE Inicio.
+        # Ninguna restauración de archivo MIDI o de mezclador lo cambia.
+        main.tabs.setCurrentWidget(main.studio_home)
         from project_status_dialog import show_project_status
         show_project_status(main,candidate.parent,candidate,action="abierto")
         return True
     except (OSError,ValueError,TypeError) as exc:
         QMessageBox.warning(main,"No se pudo abrir",str(exc))
         return False
+    finally:
+        if progress is not None:progress.close()
 
 def close_project(main):
     """Cerrar la sesión sin destruir medios ni trabajos temporales antiguos."""
@@ -939,6 +1111,7 @@ def close_project(main):
     main.recording_lab.reset_project_source()
     main.folder_display.setReadOnly(False)
     main.workbench.bind_project(None)
+    main.studio_home.home_workspace.reset_for_project()
     main.folder_display.setText(str(main.config.get("folder",
         str(__import__("main").RECORDINGS))))
     main.setWindowTitle("StemMIDI Studio")
@@ -1044,6 +1217,11 @@ class ProjectResults(QWidget):
             QHeaderView,QAbstractItemView)
         self.main=main
         self._paths=[]
+        from result_file_details import ResultInfoReader
+        self._file_info_reader=ResultInfoReader(self)
+        self._file_info_reader.ready.connect(self._show_details_ready)
+        self._info_dialog=None
+        self._info_text=None
         layout=QVBoxLayout(self)
         layout.setContentsMargins(14,12,14,12)
         title=QLabel("RESULTADOS DEL PROYECTO ACTUAL")
@@ -1055,7 +1233,9 @@ class ProjectResults(QWidget):
         subtitle.setWordWrap(True)
         subtitle.setObjectName("muted")
         layout.addWidget(subtitle)
-        self.table=QTableWidget(0,3,self)
+        from results_dragdrop import ResultsDragTable
+        self.table=ResultsDragTable(self)
+        self.table.setColumnCount(3)
         self.table.setHorizontalHeaderLabels(["Archivo","Tipo","Duración"])
         self.table.horizontalHeader().setSectionResizeMode(0,QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1,QHeaderView.ResizeToContents)
@@ -1063,9 +1243,15 @@ class ProjectResults(QWidget):
         self.table.verticalHeader().hide()
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.table.setToolTip(
+            "Ctrl+clic: varios archivos; Mayús+clic: intervalo; Ctrl+A: todos. "
+            "Arrastra la selección a otro módulo compatible, siempre como copia. "
+            "Clic derecho para guardar o eliminar la selección.")
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.cellDoubleClicked.connect(lambda row,col:self.open_selected())
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._result_context_menu)
         layout.addWidget(self.table,1)
         from preview_player import PreviewPlayer
         self.preview=PreviewPlayer("PREVISUALIZACIÓN · RESULTADO SELECCIONADO",self)
@@ -1076,7 +1262,12 @@ class ProjectResults(QWidget):
         for title,callback in (
             ("▶ Reproducir",self.play_selected),
             ("■ Detener",self.preview.stop),
+            ("Información…",self.show_file_information),
+            ("Seleccionar todo",self.table.selectAll),
+            ("Quitar selección",self.table.clearSelection),
             ("Guardar selección…",self.save_selected),
+            ("→ Compositor",self.send_to_composer),
+            ("Eliminar selección…",self.delete_selected),
             ("Guardar todo…",lambda:self.main.studio_home._save_results(self._paths))):
             b=QPushButton(title)
             b.clicked.connect(callback)
@@ -1089,16 +1280,34 @@ class ProjectResults(QWidget):
 
     def refresh(self,files):
         from PySide6.QtWidgets import QTableWidgetItem
+        from PySide6.QtCore import QSignalBlocker,QItemSelectionModel
+        selected=set(self.selected_paths())
         self._paths=list(files)
-        self.table.setRowCount(len(self._paths))
+        with QSignalBlocker(self.table):
+            self.table.setRowCount(len(self._paths))
         home=self.main.studio_home
+        from vocal_catalog import vocal_role
         for row,path in enumerate(self._paths):
+            role=vocal_role(path)
+            label=f"{role} · {path.name}" if role else path.name
             for col,value in enumerate(
-                (path.name,"MIDI" if path.suffix.lower() in (".mid",".midi",".kar") else "Audio",
+                (label,"MIDI" if path.suffix.lower() in (".mid",".midi",".kar") else "Audio",
                  home._result_duration(path))):
                 item=QTableWidgetItem(str(value))
-                if col==0:item.setToolTip(str(path))
+                if col==0:
+                    item.setToolTip(str(path))
+                    item.setData(Qt.UserRole,str(path))
                 self.table.setItem(row,col,item)
+        # Restaurar la selección por ruta real, no por índice: la inserción
+        # de nuevos resultados no debe cambiar la pista seleccionada.
+        selection=self.table.selectionModel()
+        if selection is not None:
+            with QSignalBlocker(self.table),QSignalBlocker(selection):
+                self.table.clearSelection()
+                for row,path in enumerate(self._paths):
+                    if path in selected:
+                        selection.select(self.table.model().index(row,0),
+                            QItemSelectionModel.Select|QItemSelectionModel.Rows)
         if not self._paths:self.preview.clear()
         self.note.setText(
             f"{len(self._paths)} resultados del proyecto activo. "
@@ -1111,10 +1320,59 @@ class ProjectResults(QWidget):
 
     def preview_selection(self):
         paths=self.selected_paths()
+        if paths:
+            self.note.setText(
+                f"{len(paths)} seleccionado(s) de {len(self._paths)} resultados. "
+                "Ctrl+clic / Mayús+clic para ampliar la selección.")
+        else:
+            self.note.setText(f"{len(self._paths)} resultados · sin selección.")
         if paths and paths[0].is_file():
             if self.preview.current_file!=str(paths[0].resolve()):
                 self.preview.load(paths[0])
         else:self.preview.clear()
+        if self._info_dialog is not None and self._info_dialog.isVisible():
+            self._load_file_information()
+
+    def show_file_information(self):
+        """Ficha ampliada sin alterar archivos ni el reproductor."""
+        from PySide6.QtWidgets import QDialog,QVBoxLayout,QTextBrowser,QPushButton
+        if self._info_dialog is None:
+            dialog=QDialog(self)
+            dialog.setWindowTitle("StemMIDI Studio · Información del resultado")
+            dialog.setMinimumSize(580,450)
+            dialog.setStyleSheet(
+                "QDialog { background:#041b40;color:#d6f5ff; }"
+                "QTextBrowser {background:#031734;color:#d6f5ff;"
+                "border:1px solid #278ace;font-size:12px;padding:9px;}")
+            box=QVBoxLayout(dialog)
+            info=QTextBrowser(dialog)
+            info.setOpenExternalLinks(False)
+            box.addWidget(info)
+            close=QPushButton("Cerrar",dialog)
+            close.clicked.connect(dialog.close)
+            box.addWidget(close)
+            self._info_dialog=dialog
+            self._info_text=info
+        self._load_file_information()
+        self._info_dialog.show()
+        self._info_dialog.raise_()
+
+    def _load_file_information(self):
+        files=self.selected_paths()
+        if not files:
+            self._file_info_reader.clear()
+            self._info_text.setPlainText("Selecciona un archivo de Resultados.")
+            return
+        path=files[0]
+        self._info_text.setPlainText("Leyendo metadatos del archivo seleccionado…")
+        self._file_info_reader.request(path,
+            getattr(self.main,"project_dir",None),
+            self.main.studio_home._stem_for(path))
+
+    def _show_details_ready(self,generation,report):
+        if (self._file_info_reader.is_current(generation)
+                and self._info_text is not None):
+            self._info_text.setPlainText(report)
 
     def play_selected(self):
         paths=self.selected_paths()
@@ -1129,8 +1387,51 @@ class ProjectResults(QWidget):
             self.main.workbench.show_piano_roll(file)
         else:self.play_selected()
 
+    def send_to_composer(self,paths=None):
+        files=list(paths) if paths is not None else self.selected_paths()
+        if not files:return False
+        editor=getattr(self.main,"composer_tab",None)
+        if editor is None:return False
+        editor.sync_project()
+        editor._add(files)
+        self.main.tabs.setCurrentWidget(editor)
+        return True
+
     def save_selected(self):
         self.main.studio_home._save_results(self.selected_paths())
+
+    def delete_selected(self,paths=None):
+        files=self.selected_paths() if paths is None else list(paths)
+        if not files:return False
+        from safe_file_delete import trash_files
+        if not trash_files(self,files):return False
+        self.preview.stop()
+        self.main.studio_home.refresh(force=True)
+        return True
+
+    def _result_context_menu(self,position):
+        index=self.table.indexAt(position)
+        selected=self.selected_paths()
+        clicked=self._paths[index.row()] if (index.isValid() and
+                             0<=index.row()<len(self._paths)) else None
+        files=selected if (clicked is None or clicked in selected) else [clicked]
+        menu=QMenu(self)
+        all_action=menu.addAction("Seleccionar todos · Ctrl+A")
+        clear_action=menu.addAction("Quitar selección")
+        menu.addSeparator()
+        save=menu.addAction(f"Guardar {len(files)} archivo(s) seleccionados…")
+        composer=menu.addAction(
+            f"Enviar {len(files)} archivo(s) al Compositor")
+        delete=menu.addAction(f"Eliminar {len(files)} archivo(s) seleccionados…")
+        save.setEnabled(bool(files))
+        composer.setEnabled(bool(files))
+        delete.setEnabled(bool(files))
+        action=menu.exec(self.table.viewport().mapToGlobal(position))
+        if action is all_action:self.table.selectAll()
+        elif action is clear_action:self.table.clearSelection()
+        elif action is save:self.main.studio_home._save_results(files)
+        elif action is composer:self.send_to_composer(files)
+        elif action is delete:self.delete_selected(files)
 
 def install(main):
     """Añadir portada fiel a la maqueta sin alterar la lógica preexistente."""
@@ -1141,17 +1442,20 @@ def install(main):
     tabs=main.tabs
     main.monitor_page=tabs.widget(0)
     # Reasociar antes de setCentralWidget para evitar que Qt destruya tabs.
-    shell=QWidget(main)
-    shell.setObjectName("studioShell")
+    from main_rounded_shell import RoundedMainShell
+    shell=RoundedMainShell(main)
     tabs.setParent(shell)
-    vertical=QVBoxLayout(shell)
-    vertical.setContentsMargins(0,0,0,0)
-    vertical.setSpacing(0)
+    vertical=shell.layout()
     banner=StudioHeader(main)
     vertical.addWidget(banner)
     vertical.addWidget(tabs,1)
     main.setCentralWidget(shell)
+    main._rounded_shell=shell
     main.studio_banner=banner
+    # Movimiento por la cabecera y redimensionado desde los bordes invisibles.
+    # El resto de los módulos y la lógica de audio permanecen intactos.
+    from frameless_main_window import FramelessWindowController
+    main._frameless_controls=FramelessWindowController(main,banner)
 
     home=StudioHome(main,main.workbench)
     main.studio_home=home
@@ -1184,6 +1488,15 @@ def install(main):
         legacy.hide()
     main.results_tab=ProjectResults(main)
     tabs.addTab(main.results_tab,"▱ Resultados")
+    # Compositor real multipista conectado a los mismos Resultados.
+    # Orden exacto solicitado: Piano Roll | Compositor | Resultados.
+    from compositor_tab import ComposerTab
+    main.composer_tab=ComposerTab(main)
+    tabs.insertTab(tabs.indexOf(main.results_tab),
+                   main.composer_tab,"♫ Compositor")
+    tabs.currentChanged.connect(lambda index:
+        main.composer_tab.sync_project()
+        if tabs.widget(index) is main.composer_tab else None)
     home.refresh(force=True)
     main.recording_lab.resultsChanged.connect(lambda:home.refresh(force=True))
 
@@ -1231,7 +1544,8 @@ def install(main):
     tabicons=[
         ("Inicio","home"),("Monitor / Grabación","mic"),
         ("Separación de audio","layers"),("Desglose de batería","drum"),("Audio a MIDI","note"),("Estudio vocal","vocal"),
-        ("Mezclador","mixer"),("Piano Roll","piano"),("Resultados","folder")]
+        ("Mezclador","mixer"),("Piano Roll","piano"),
+        ("Compositor","mixer"),("Resultados","folder")]
     tabs.setIconSize(QSize(22,22))
     for name,iconname in tabicons:
         for i in range(tabs.count()):
@@ -1253,8 +1567,16 @@ def install(main):
     from neon_identity import NEON_GLOBAL_CSS
     QApplication.instance().setStyleSheet(STYLE_STUDIO+NEON_GLOBAL_CSS+
         "\nQCheckBox::indicator:checked {image:url('"+str(check)+"');}\n")
+    # No pintar un rectángulo oscuro encima de las esquinas transparentes.
+    # La carcasa redondeada pinta el gradiente/borde usando el mismo esquema
+    # que floatingGlass; el resto del CSS y módulos no se tocan.
+    main.setStyleSheet("QMainWindow#stemMainWindow {background:transparent; border:0;}")
     from studio_workspace_cards import install as install_cards
     install_cards(main)
+    # Pestañas profesionales: se trasladan exactamente los mismos
+    # editores/controles del flotante, sin un segundo motor independiente.
+    from studio_shared_tabs import install as install_shared_tabs
+    install_shared_tabs(main)
     import ui_polish
     ui_polish.install(main)
     # Ayuda emergente de todos los controles; las tareas nuevas y el
@@ -1264,5 +1586,12 @@ def install(main):
     banner.help_toggle.bind(main._context_help)
     from help_center import install_shortcuts
     install_shortcuts(main)
+    from home_tab_sync import HomeTabSynchronizer
+    main.home_tab_sync=HomeTabSynchronizer(main)
+    home._tab_sync=main.home_tab_sync
+    # Un transporte MIDI persistente por encima de todos los módulos;
+    # no sustituir ninguno de los reproductores que ya funcionan.
+    from global_midi_transport import install as install_global_midi
+    install_global_midi(main)
     return home
 

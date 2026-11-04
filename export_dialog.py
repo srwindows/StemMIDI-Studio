@@ -5,7 +5,7 @@ from pathlib import Path
 from PySide6.QtWidgets import QMessageBox,QInputDialog
 import file_dialogs
 
-def _copy_atomic(source,target):
+def _copy_atomic(source,target,on_chunk=None):
     source=Path(source).resolve();target=Path(target).expanduser()
     if not source.is_file():raise ValueError("Origen no disponible: "+str(source))
     if target.is_symlink():raise ValueError("No se puede sobrescribir un enlace simbólico")
@@ -14,7 +14,11 @@ def _copy_atomic(source,target):
     fd,name=tempfile.mkstemp(prefix=".stem_export_",dir=target.parent)
     try:
         with os.fdopen(fd,"wb") as output,source.open("rb") as original:
-            shutil.copyfileobj(original,output,1024*1024)
+            while True:
+                chunk=original.read(1024*1024)
+                if not chunk:break
+                output.write(chunk)
+                if on_chunk is not None:on_chunk(len(chunk))
             output.flush();os.fsync(output.fileno())
         if Path(name).stat().st_size!=source.stat().st_size:
             raise OSError("Copia incompleta de "+str(source))
@@ -147,24 +151,46 @@ def export_files(parent,sources,project_dir=None,title="Guardar resultado",kind=
         if not choice:return []
         target=choice[0][1]
         target.parent.mkdir(parents=True,exist_ok=True)
+        from project_progress import ProjectProgress
+        progress=ProjectProgress(parent,"Exportando ZIP",steps=len(files)+2,
+                       media_sizes=[p.stat().st_size for p in files])
+        progress.allow_cancel(True)
         fd,temp=tempfile.mkstemp(prefix=".stem_zip_",dir=target.parent)
         try:
             with zipfile.ZipFile(temp,"w",compression=zipfile.ZIP_STORED) as archive:
                 used=set()
-                for source in files:
+                for index,source in enumerate(files,1):
+                    progress.begin_media(source.name)
                     name=source.name
                     i=2
                     while name in used:
                         name=source.stem+"_"+str(i)+source.suffix;i+=1
                     used.add(name)
-                    archive.write(source,name)
+                    with source.open("rb") as stream,archive.open(name,"w") as dest:
+                        while True:
+                            chunk=stream.read(1024*1024)
+                            if not chunk:break
+                            dest.write(chunk)
+                            progress.copied(len(chunk))
+                    progress.end_media(source.name)
+                    progress.stage(f"Incluida pista {index}/{len(files)}: {name}")
             with zipfile.ZipFile(temp) as z:
                 if z.testzip() is not None:raise OSError("ZIP no válido")
+            progress.stage("ZIP íntegro verificado")
+            progress.allow_cancel(False)
             os.replace(temp,target)
+            progress.stage("ZIP guardado en destino")
+            progress.complete("Archivo ZIP exportado correctamente")
+        except __import__("project_progress").OperationCancelled:
+            QMessageBox.information(parent,"ZIP cancelado",
+                "El archivo ZIP incompleto se ha descartado.")
+            return []
         except (OSError,ValueError,zipfile.BadZipFile) as exc:
             QMessageBox.warning(parent,"Error al guardar ZIP",str(exc))
             return []
-        finally:Path(temp).unlink(missing_ok=True)
+        finally:
+            Path(temp).unlink(missing_ok=True)
+            progress.close()
         QMessageBox.information(parent,"Exportado",f"{len(files)} archivos en:\n{target}")
         return [target]
     return []
@@ -189,13 +215,32 @@ def _execute(parent,pairs):
     pairs=_resolve_conflicts(parent,real)
     if pairs is None:return []
     result=list(same)
+    if not pairs:
+        return result
+    from project_progress import ProjectProgress
+    progress=ProjectProgress(parent,"Exportando archivos",
+        steps=len(pairs)+1,media_sizes=[source.stat().st_size for source,_ in pairs])
+    progress.allow_cancel(True)
     try:
-        for source,dest in pairs:
-            result.append(_copy_atomic(source,dest))
+        for index,(source,dest) in enumerate(pairs,1):
+            progress.begin_media(source.name)
+            result.append(_copy_atomic(source,dest,on_chunk=progress.copied))
+            progress.end_media(source.name)
+            progress.stage(f"Exportado {index}/{len(pairs)}: {source.name}")
+        progress.allow_cancel(False)
+        progress.stage("Todas las copias comprobadas")
+        progress.complete("Exportación terminada y verificada")
+    except __import__("project_progress").OperationCancelled:
+        QMessageBox.information(parent,"Exportación cancelada",
+            f"{len(result)} archivos ya exportados permanecen en destino; "
+            "la copia actual se ha descartado.")
+        return result
     except (OSError,ValueError) as exc:
         QMessageBox.warning(parent,"Error al exportar",
                             str(exc)+"\nLos archivos restantes no se han copiado.")
         return result
+    finally:
+        progress.close()
     QMessageBox.information(parent,"Guardado",
                             f"Se han guardado {len(result)} archivos.\n"+
                             "\n".join(str(x) for x in result[:5])+

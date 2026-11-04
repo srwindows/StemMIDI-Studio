@@ -392,6 +392,12 @@ class RecordingLab(QFrame):
         proc.finished.connect(self._finished_process)
         proc.errorOccurred.connect(self._process_error)
         self.process=proc
+        self._cancel_requested=False
+        from engine_task_indicator import EngineTaskIndicator
+        self._engine_indicator=EngineTaskIndicator(self,
+             "Laboratorio · procesamiento de audio",phases=1)
+        self._engine_indicator.set_cancel_callback(self.cancel_processing)
+        self._engine_indicator.attach(proc,"Procesando audio con FFmpeg")
         self.run_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
         self.pick_button.setEnabled(False)
@@ -423,6 +429,9 @@ class RecordingLab(QFrame):
         self.pick_button.setEnabled(True)
         self.last_button.setEnabled(True)
         self.status.setText("Error en el laboratorio: "+description)
+        if getattr(self,"_engine_indicator",None) is not None:
+            self._engine_indicator.finish(False,self.status.text())
+            self._engine_indicator=None
         self.temp_output=None;self.final_output=None
 
     def _finished_process(self,code,state):
@@ -438,11 +447,15 @@ class RecordingLab(QFrame):
         self.cancel_button.setEnabled(False)
         self.pick_button.setEnabled(True)
         self.last_button.setEnabled(True)
-        if code!=0 or state!=QProcess.NormalExit or not temp or not temp.is_file() or temp.stat().st_size<200:
+        if (self._cancel_requested or code!=0 or state!=QProcess.NormalExit or
+            not temp or not temp.is_file() or temp.stat().st_size<200):
             if temp:temp.unlink(missing_ok=True)
             detail=self.log_data.decode(errors="replace")[-750:]
             self.status.setText("No se ha creado el audio procesado. "+
                                 (detail or "FFmpeg terminó con error."))
+            if getattr(self,"_engine_indicator",None) is not None:
+                self._engine_indicator.finish(False,self.status.text())
+                self._engine_indicator=None
             return
         try:
             # Conservar todos los resultados y resolver colisiones entre
@@ -461,9 +474,15 @@ class RecordingLab(QFrame):
             # Evita borrar un resultado válido si falla el movimiento.
             self.status.setText("Procesado terminado, pero falta incorporar "
                                 "el archivo al proyecto: "+str(error))
+        if getattr(self,"_engine_indicator",None) is not None:
+            ok=(final is not None and self.processed==final
+                and final.is_file())
+            self._engine_indicator.finish(bool(ok),self.status.text())
+            self._engine_indicator=None
 
     def cancel_processing(self):
         if self.process is not None and self.process.state()!=QProcess.NotRunning:
+            self._cancel_requested=True
             self.process.kill()
             self.status.setText("Cancelando solo el procesamiento; "
                                 "la grabación original está protegida.")

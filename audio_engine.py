@@ -103,6 +103,7 @@ class CaptureWorker(QThread):
     capture_state = Signal(bool, str)
     recording_state = Signal(bool, str)
     recording_finished = Signal(str, bool, str)
+    live_listen_state = Signal(bool, str)
 
     def __init__(self, source: str, parent=None, sample_rate=SAMPLE_RATE):
         super().__init__(parent)
@@ -113,6 +114,12 @@ class CaptureWorker(QThread):
         # Posprocesamiento de captura, independiente del volumen del sistema.
         self._gain_db = 0
         self._balance = 0
+        self._eq_settings=(False,0,0,0)
+        from capture_eq import StereoCaptureEQ
+        self._capture_eq=StereoCaptureEQ(self.sample_rate)
+        from capture_live_listen import LiveProcessedListen
+        self._live_listen=LiveProcessedListen(self.source,self.sample_rate)
+        self._listen_requested=""
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._pending_start = None
@@ -136,6 +143,47 @@ class CaptureWorker(QThread):
         with self._lock:
             self._gain_db=gain_db
             self._balance=balance
+
+    def set_input_eq(self,enabled=True,bass_db=0,mid_db=0,treble_db=0):
+        """Actualizar tonos sin reiniciar la captura ni alterar PipeWire."""
+        gains=tuple(int(v) for v in (bass_db,mid_db,treble_db))
+        if any(not -12<=v<=12 for v in gains):
+            raise ValueError("La ecualización admite de -12 a +12 dB")
+        with self._lock:
+            self._eq_settings=(bool(enabled),*gains)
+
+    def set_live_listen(self,enabled=False,sink=""):
+        """Escucha POS-EQ opcional, nunca activada automáticamente."""
+        from capture_live_listen import is_feedback_route
+        chosen=str(sink or "") if enabled else ""
+        if enabled and is_feedback_route(self.source,chosen):
+            raise ValueError("La escucha no puede salir por la misma fuente monitorizada")
+        with self._lock:
+            self._listen_requested=chosen
+
+    def _feed_live_listen(self,pcm):
+        with self._lock:
+            requested=self._listen_requested
+        player=self._live_listen
+        if requested!=player.sink:
+            player.stop()
+            if requested:
+                try:
+                    player.start(requested)
+                except (ValueError,OSError,RuntimeError) as error:
+                    with self._lock:
+                        self._listen_requested=""
+                    self.live_listen_state.emit(False,str(error))
+                    return
+                self.live_listen_state.emit(True,"Escucha procesada activa")
+            else:
+                self.live_listen_state.emit(False,"Escucha procesada detenida")
+        if requested and player.process is not None:
+            player.feed(pcm)
+            if player.process is None:
+                with self._lock:
+                    self._listen_requested=""
+                self.live_listen_state.emit(False,player.status)
 
     @staticmethod
     def apply_input_controls(pcm, gain_db=0, balance=0):
@@ -165,7 +213,18 @@ class CaptureWorker(QThread):
         with self._lock:
             gain=self._gain_db
             balance=self._balance
-        return self.apply_input_controls(pcm,gain,balance)
+            enabled,bass,mid,treble=self._eq_settings
+        # Orden de la ruta REAL: ganancia → balance → EQ →
+        # codificación a disco y análisis de niveles. Nunca solo vista.
+        conditioned=self.apply_input_controls(pcm,gain,balance)
+        stereo=np.frombuffer(conditioned,dtype="<f4").reshape(-1,CHANNELS)
+        # Mute absoluto: no dejar pasar el breve historial FIR anterior
+        # después de llevar Volumen de grabación a 0 % (-60 dB).
+        if gain==-60:
+            self._capture_eq.process(stereo,False,0,0,0)
+            return bytes(len(conditioned))
+        return self._capture_eq.process(
+            stereo,enabled,bass,mid,treble).astype("<f4").tobytes()
 
     def request_recording(self, target_file: Path, format_name: str):
         with self._lock:
@@ -276,6 +335,7 @@ class CaptureWorker(QThread):
             for pcm in record_chunks(self.source,self._stop,rate=self.sample_rate):
                 if self._stop.is_set():break
                 pcm=self._processed_chunk(pcm)
+                self._feed_live_listen(pcm)
                 with self._lock:
                     pending_start=self._pending_start
                     pending_stop=self._pending_stop
@@ -303,6 +363,7 @@ class CaptureWorker(QThread):
         except Exception as exc:
             self.capture_state.emit(False,str(exc))
         finally:
+            self._live_listen.stop()
             self._close_encoder()
             self.capture_state.emit(False,"Supervisión detenida")
 
@@ -322,11 +383,21 @@ class CaptureWorker(QThread):
                                        stderr=subprocess.PIPE, bufsize=0)
             self._capture = process
             # parec arranca bajo demanda al comenzar la lectura.
+            # Los reads de una tubería POSIX pueden devolver cualquier
+            # número de bytes, no necesariamente un frame estéreo f32le.
+            # Conservar el sobrante para evitar cortes o reshape inválido.
+            remainder=b""
             while not self._stop.is_set():
                 pcm = process.stdout.read(16384)
                 if not pcm:
                     break
-                pcm=self._processed_chunk(pcm)
+                block=remainder+pcm
+                aligned=len(block)-(len(block)%(CHANNELS*CAPTURE_BYTES_PER_SAMPLE))
+                remainder=block[aligned:]
+                if aligned==0:
+                    continue
+                pcm=self._processed_chunk(block[:aligned])
+                self._feed_live_listen(pcm)
                 with self._lock:
                     pending_start = self._pending_start
                     pending_stop = self._pending_stop
@@ -359,6 +430,7 @@ class CaptureWorker(QThread):
         except Exception as exc:
             self.capture_state.emit(False, f"Error al iniciar captura: {exc}")
         finally:
+            self._live_listen.stop()
             self._close_encoder()
             if self._capture:
                 if self._capture.poll() is None:

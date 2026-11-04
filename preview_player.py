@@ -43,6 +43,40 @@ class AudioRoute:
     """
     players = weakref.WeakSet()
     controls = weakref.WeakSet()
+    _active_player=None
+    _live_synth=None
+
+    @classmethod
+    def claim_live(cls,live):
+        """One active output; no live synth alongside FFplay or a monitor."""
+        previous=cls.active_preview()
+        if previous is not None:previous.stop()
+        previous_live=cls._live_synth() if cls._live_synth else None
+        if previous_live is not None and previous_live is not live:
+            previous_live.stop()
+        before=cls.before_preview
+        if callable(before):before()
+        cls._live_synth=weakref.ref(live)
+
+    @classmethod
+    def release_live(cls,live):
+        previous=cls._live_synth() if cls._live_synth else None
+        if previous is live:cls._live_synth=None
+
+    @classmethod
+    def claim_preview(cls,player):
+        live=cls._live_synth() if cls._live_synth else None
+        if live is not None and live.running:live.stop()
+        # Evitar dos reproductores independientes sonando simultáneamente.
+        previous=cls._active_player() if cls._active_player else None
+        if previous is not None and previous is not player:
+            if previous._play_process is not None or previous._qt_active:
+                previous.stop()
+        cls._active_player=weakref.ref(player)
+
+    @classmethod
+    def active_preview(cls):
+        return cls._active_player() if cls._active_player else None
     selected_id = None
     before_preview = None
 
@@ -165,6 +199,7 @@ class PreviewPlayer(QFrame):
         self._current_ms = 0
         # Ecualizador exclusivo de preescucha; no procesa el archivo origen.
         self._preview_eq=(0,0,0)
+        self._preview_compressor=None
 
         self.output = QAudioOutput(self)
         self.output.setVolume(.85)
@@ -415,6 +450,17 @@ class PreviewPlayer(QFrame):
             self._stop_audio()
             self._start_audio(position)
 
+    def set_preview_compressor(self,enabled=False,threshold=-18,ratio=3,
+                               attack=20,release=250):
+        value=(max(-36,min(-6,int(threshold))),max(1,min(8,int(ratio))),
+               max(1,min(200,int(attack))),max(20,min(1000,int(release)))) if enabled else None
+        if value==self._preview_compressor:return
+        self._preview_compressor=value
+        if not self._native_qt and self._play_process is not None and not self._paused:
+            pos=self._position()
+            self._stop_audio()
+            self._start_audio(pos)
+
     def _start_audio(self,start_ms=0):
         before=AudioRoute.before_preview
         if callable(before):
@@ -424,6 +470,7 @@ class PreviewPlayer(QFrame):
         if not self._prepared or not Path(self._prepared).is_file():
             self.status.setText("El audio todavía no está preparado")
             return False
+        AudioRoute.claim_preview(self)
         self._stop_audio()
         if self._native_qt:
             self.player.setSource(QUrl.fromLocalFile(str(self._prepared)))
@@ -466,10 +513,14 @@ class PreviewPlayer(QFrame):
                 filters.append("pan=mono|c0=c1")
         if speed!=1.0:filters.append(f"atempo={speed:.3f}")
         bass_db,mid_db,treble_db=self._preview_eq
-        if bass_db:filters.append(f"bass=g={bass_db}:f=110")
-        if mid_db:filters.append(f"equalizer=f=1000:t=q:w=1:g={mid_db}")
-        if treble_db:filters.append(f"treble=g={treble_db}:f=4800")
+        if bass_db:filters.append(f"bass=g={bass_db}:f=180")
+        if mid_db:filters.append(f"equalizer=f=1200:t=q:w=1:g={mid_db}")
+        if treble_db:filters.append(f"treble=g={treble_db}:f=3600")
         if any(self._preview_eq):filters.append("alimiter=limit=0.95")
+        if self._preview_compressor is not None:
+            threshold,ratio,attack,release=self._preview_compressor
+            linear=10**(threshold/20)
+            filters.append(f"acompressor=threshold={linear:.6f}:ratio={ratio}:attack={attack}:release={release}:makeup=1")
         if filters:args+=["-af",",".join(filters)]
         args+=["-i",str(self._prepared)]
         self._play_process=proc
@@ -535,7 +586,12 @@ class PreviewPlayer(QFrame):
         self._delete_temp_files()
         self._set_duration(0)
         self._origin = path.resolve()
-        self._measured_vu.load(self._origin)
+        # MIDI no contiene PCM. Analizar solo el WAV real sintetizado
+        # cuando termine la preparación, nunca el propio .mid.
+        if self._origin.suffix.lower() in MIDI_SUFFIXES:
+            self._measured_vu.stop()
+        else:
+            self._measured_vu.load(self._origin)
         self._channel_count=2
         self._prepared = None
         self._fallback_attempted = False
@@ -607,6 +663,9 @@ class PreviewPlayer(QFrame):
                 self.error.emit(msg)
             else:
                 self._prepared = result
+                # Mismo audio PCM que escucha el usuario, también para MIDI.
+                # Se conserva el mecanismo de medición real existente.
+                self._measured_vu.load(result)
                 try:
                     metadata=probe_audio(result)
                     self._set_duration(round(metadata["duration"]*1000))

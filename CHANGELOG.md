@@ -1,14 +1,22 @@
-# Registro de versiones
+# Historial de StemMIDI Studio
 
-## v1.0 — 27 de octubre de 2026
+## 1.1.0-beta.1 — 2026-11-04
 
-Primera versión pública del código fuente de StemMIDI Studio bajo licencia PolyForm Noncommercial 1.0.0.
+- Publicacion del estado actual de los modulos de StemMIDI Studio.
+- Inicio 3×4 con intercambios exactos entre dos tarjetas.
+- Pestañas profesionales MIDI→audio y Mezclador; presets vocales unificados.
+- Resultados compacto y arrastre/copias de archivos entre modulos.
+- EQ, ganancia y balance en la ruta PCM de grabacion.
+- Analizadores de onda y espectro posprocesamiento, y escucha procesada
+  opcional con seleccion de salida y proteccion contra realimentacion.
+- Compositor MIDI/audio multipista y Piano Roll ampliado.
+- Modelo estadistico multinstrumental agregado de 42 perfiles, sin subir
+  canciones MIDI/KAR ni bases ritmicas originales.
+- Documentacion, permisos, configuracion Git y pruebas publicas.
 
-- Monitorización y captura profesional de audio con contador ajustado a los fotogramas capturados.
-- Separación de fuentes por modelos de IA externos y seguimiento de progreso determinado por mensajes reales del motor.
-- Conversión de audio a MIDI, editor Piano Roll, estudio vocal, desglose de batería y mezclador.
-- Nuevo proyecto con configuración heredada sin copiar archivos del anterior.
-- Biblioteca persistente de ajustes por módulo y generales.
-- Interfaz modular con tarjetas, herramientas y ventanas flotantes.
+**Beta:** siguen pendientes verificaciones exhaustivas de escucha real sobre
+hardware fisico y builds nativas Windows y macOS.
 
-La separación neuronal y ciertas funciones requieren modelos y dependencias adicionales que no se publican en este repositorio. Las pruebas nativas en Windows y macOS permanecen pendientes. No se incluyen grabaciones, proyectos privados, compilaciones locales ni pesos de IA.
+## 1.0 — 2026-10-27
+
+Primera publicacion del codigo fuente. Historial preservado en Git.

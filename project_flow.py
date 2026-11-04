@@ -48,6 +48,8 @@ def activate_directory(main,path,project_id,name):
         marker=path/(slug_name(name)+".stemstudio.json")
     if not path.is_dir() or not marker.is_file():
         raise ValueError("El proyecto no tiene su carpeta y manifiesto.")
+    from safe_file_delete import rollback_deletions
+    rollback_deletions(path)
     if not main.workbench.switch_project(project_id,path):
         return False
     main.project_dir=path
@@ -58,11 +60,14 @@ def activate_directory(main,path,project_id,name):
     main.folder_display.setText(str(path/"grabaciones"))
     main.folder_display.setReadOnly(True)
     main.workbench.bind_project(path)
+    main.studio_home.home_workspace.reset_for_project()
     main.file_prefix.setText(slug_name(name))
     main.workbench.converter.refresh_project_stems()
     main.tabs.setCurrentWidget(main.studio_home)
     main.studio_home.refresh(force=True)
     main.setWindowTitle("StemMIDI Studio · "+str(name))
+    from project_transaction import begin
+    begin(main)
     return True
 
 def create_named_project(main,name,base,format_name,rate,show_errors=True,inherit_settings=False):
@@ -82,13 +87,17 @@ def create_named_project(main,name,base,format_name,rate,show_errors=True,inheri
     if dest.exists() and (not dest.is_dir() or any(dest.iterdir())):
         raise FileExistsError("Ya existe un proyecto o archivos en: "+str(dest)+
             ". Abre el proyecto existente o elige un destino vacío.")
-    from studio_shell import _protect_unsaved_project
-    if not _protect_unsaved_project(main):
-        return False
+    # Capture UI preferences BEFORE the previous project is saved or
+    # discarded. Discard may restore an older state, but the explicit
+    # "new project preserving adjustments" must retain what is
+    # currently on screen. Media and paths are never copied.
     preserved_settings=None
     if inherit_settings:
         from studio_settings_library import capture_settings
         preserved_settings=capture_settings(main)
+    from studio_shell import _protect_unsaved_project
+    if not _protect_unsaved_project(main):
+        return False
     new_id=uuid4().hex
     if not main.workbench.switch_project(new_id,dest):
         return False
@@ -108,6 +117,9 @@ def create_named_project(main,name,base,format_name,rate,show_errors=True,inheri
         main.folder_display.setText(str(dest/"grabaciones"))
         main.folder_display.setReadOnly(True)
         main.workbench.bind_project(dest)
+        # Un proyecto nuevo comienza desde la distribución de fábrica;
+        # no copiar las posiciones del proyecto anterior por accidente.
+        main.studio_home.home_workspace.reset_for_project()
         if preserved_settings is None:
             main.workbench.converter.select_factory_preset()
         else:
@@ -117,7 +129,8 @@ def create_named_project(main,name,base,format_name,rate,show_errors=True,inheri
         main.file_prefix.setText(slug_name(text))
         main.setWindowTitle("StemMIDI Studio · "+text)
         persist(main)
-        main.save_config()
+        from project_transaction import begin
+        begin(main)
         main.tabs.setCurrentWidget(main.studio_home)
         main.studio_home.refresh(force=True)
         return True
@@ -201,7 +214,10 @@ def new_project_dialog(main,default_name="",inherit_settings=False):
     form.addRow("Formato / profundidad",format_combo)
     rate_combo=QComboBox()
     for r in SAMPLE_RATES:rate_combo.addItem(f"{r/1000:g} kHz · estéreo",r)
-    rate_combo.setCurrentIndex(max(0,rate_combo.findData(main.capture_rate.currentData())))
+    # Proyecto nuevo: música a 44,1 kHz; al conservar ajustes, respetar lo guardado.
+    default_rate=(main.capture_rate.currentData() if inherit_settings else 44100)
+    if "Opus" in format_combo.currentText():default_rate=48000
+    rate_combo.setCurrentIndex(max(0,rate_combo.findData(default_rate)))
     form.addRow("Frecuencia de muestreo",rate_combo)
     quality=QLabel()
     quality.setWordWrap(True)
@@ -273,7 +289,7 @@ def ensure_recording_project(main):
 def backup_recording(main):
     path=Path(main.last_file) if main.last_file else None
     project=project_directory(main)
-    if not project or not path or not path.is_file() or not inside(path,project/"grabaciones"):
+    if not project or not path or not path.is_file() or not (inside(path,project/"grabaciones") or inside(path,project/"temporales"/"grabaciones")):
         QMessageBox.information(main,"Sin grabación",
             "No hay grabación disponible en este proyecto.")
         return None
@@ -283,10 +299,10 @@ def backup_recording(main):
     return files[0] if files else None
 
 def repeat_project(main,confirm=True):
-    """Vacía la toma activa conservando sólo el manifiesto y backup.
+    """Reiniciar sólo cambios NO confirmados, preservando todos los guardados.
 
-    ÚNICAMENTE elimina ficheros dentro de subcarpetas conocidas y del
-    proyecto marcado como activo. Jamás elimina un directorio ajeno.
+    Repetir nunca borra grabaciones, stems o MIDI ya consolidados.
+    Se carga el último manifiesto confirmado después de revertir temporales.
     """
     project=project_directory(main)
     if not project or not main.project_path or not main.project_path.is_file():
@@ -321,49 +337,18 @@ def repeat_project(main,confirm=True):
         raise ValueError("El manifiesto no coincide con el proyecto abierto")
     if confirm:
         response=QMessageBox.question(main,"Repetir · eliminar toma actual",
-            "La repetición DESCARTARÁ las grabaciones y resultados temporales "
-            "de este proyecto. Se conservarán la carpeta, sus ajustes .json "
-            "y todo lo guardado en backup.\n\n"
-            "¿Seguro que quieres repetir desde cero?",
+            "Reiniciar la sesión descartará solamente los cambios NO "
+            "guardados.\nTodos los archivos definitivos y el manifiesto "
+            "confirmado se conservarán.\n\n"
+            "¿Reiniciar desde el último guardado?",
             QMessageBox.Yes|QMessageBox.No,QMessageBox.No)
         if response!=QMessageBox.Yes:return False
-    # Cerrar vistas/procesos antes de retirar los archivos.
-    main.record_preview.clear()
-    main.workbench.sep_results.preview.clear()
-    main.workbench.midi_results.preview.clear()
-    main.workbench.converter.source_preview.clear()
-    main.workbench.separator.source_preview.clear()
-    main.workbench.piano.preview.clear()
-    main.drum_module.preview.clear()
-    main.vocal_module.preview.clear()
-    # Tras confirmación, borrar exclusivamente contenido conocido
-    # (sin seguir enlaces, y sin afectar backup ni el manifiesto).
-    for sub in SAFE_FOLDERS:
-        target=project/sub
-        if not target.is_dir() or target.is_symlink():continue
-        for child in target.iterdir():
-            if child.is_symlink():child.unlink()
-            elif child.is_dir():shutil.rmtree(child)
-            elif child.is_file():child.unlink()
-    # Reiniciar tareas sin cambiar identificador ni nombre.
-    # Reinicializar las vistas y las cuatro tareas dentro de la misma
-    # carpeta/proyecto (sin cambiar su identificador original).
-    if not main.workbench.switch_project(main.project_id,project):
-        return False
-    main.project_dir=project
-    main.project_path=expected
-    main.project_name=data.get("project_name",main.project_name)
-    main.project_recordings=[]
-    main.last_file=None
-    main.record_preview.clear()
-    main.folder_display.setText(str(project/"grabaciones"))
-    main.folder_display.setReadOnly(True)
-    main.workbench.bind_project(project)
-    main.file_prefix.setText(slug_name(main.project_name))
-    persist(main,auto=True)
-    main.tabs.setCurrentWidget(main.studio_home)
-    main.studio_home.refresh(force=True)
-    return True
+    # Prohibido destruir carpetas definitivas: repetir sólo restaura
+    # el punto de guardado actual y reabre su estado de interfaz.
+    from project_transaction import discard
+    from studio_shell import open_project
+    discard(main)
+    return bool(open_project(main,str(expected)))
 
 def atomic_json(path,data):
     path=Path(path)
@@ -404,8 +389,7 @@ def register_recording(main,path):
     # La grabación pasa a ser el origen del proyecto actual.
     main.workbench.separator.on_import_selected(str(source))
     main.workbench.converter.refresh_project_stems()
-    output=persist(main,auto=True)
-    main.log("Proyecto actualizado con grabación: "+str(output))
+    main.log("Grabación temporal registrada. Se guardará con el proyecto.")
     main.studio_home.refresh(force=True)
 
 def approved_path(main):
@@ -439,7 +423,9 @@ def approved_map(main):
             continue
         source=Path(path)
         if (name in ("Voces","Batería","Bajo","Guitarra","Piano","Viento","Otros","Izquierdo","Derecho")
-            and source.is_file() and inside(source,store.folder)):
+            and source.is_file() and (inside(source,store.folder)
+                or (main.project_dir and inside(source,
+                      __import__("project_layout").module_dir(main.project_dir,"stems"))))):
             result[name]=str(source)
     return result
 
@@ -501,15 +487,13 @@ def approve_separation(main,quiet=False):
     atomic_json(approved_path(main),{
         "task":str(store.folder.resolve()),"stems":groups})
     route_approved(main)
-    try:persist(main,auto=True)
-    except OSError as exc:
-        main.log("Error persistiendo proyecto tras aprobar: "+str(exc))
+    main.log("Aprobación provisional: se confirmará al guardar proyecto.")
     main.workbench.sep_results.status.setText(
         "Separación aprobada · stems enviados a los módulos y disponibles en Audio a MIDI.")
     main.log("Stems aprobados: "+", ".join(sorted(groups)))
     return True
 
-def route_approved(main):
+def route_approved(main,refresh=True):
     stems=approved_map(main)
     if not stems:return
     main.drum_module.refresh_sources()
@@ -524,7 +508,7 @@ def route_approved(main):
         main.vocal_module.status.setText(
             "Voz aprobada del proyecto: "+Path(stems["Voces"]).name)
     main.workbench.converter.refresh_project_stems()
-    main.studio_home.refresh(force=True)
+    if refresh:main.studio_home.refresh(force=True)
 
 def add_approval_button(main):
     results=main.workbench.sep_results

@@ -20,7 +20,7 @@ class MeasuredPlaybackVU:
         self.meter=StereoMeter(player)
         self.meter.setMinimumHeight(53)
         self.meter.setMaximumHeight(69)
-        self.meter.setToolTip("VU de preescucha: RMS L/R medido del audio real, muestreo de monitorización.")
+        self.meter.setToolTip("VU de preescucha: RMS L/R en dBFS del PCM real, ajustado al volumen software.")
         layout.addWidget(self.meter)
         self.levels=[]
         self.generation=0
@@ -43,11 +43,30 @@ class MeasuredPlaybackVU:
         def analyze():
             proc=None
             try:
-                proc=subprocess.Popen(
-                    ["ffmpeg","-nostdin","-hide_banner","-loglevel","error",
+                # Medir la misma señal filtrada que envía FFplay al dispositivo.
+                # Si el usuario activa EQ en la preescucha, aplicar el mismo
+                # filtro también al análisis PCM, no mostrar VU pre-EQ.
+                filters=[]
+                bass,mid,treble=getattr(self.player,"_preview_eq",(0,0,0))
+                if bass:filters.append(f"bass=g={bass}:f=180")
+                if mid:filters.append(f"equalizer=f=1200:t=q:w=1:g={mid}")
+                if treble:filters.append(f"treble=g={treble}:f=3600")
+                if filters:filters.append("alimiter=limit=0.95")
+                comp=getattr(self.player,"_preview_compressor",None)
+                if comp is not None:
+                    threshold,ratio,attack,release=comp
+                    linear=10**(threshold/20)
+                    filters.append(f"acompressor=threshold={linear:.6f}:ratio={ratio}:attack={attack}:release={release}:makeup=1")
+                cmd=["ffmpeg","-nostdin","-hide_banner","-loglevel","error",
                      "-i",str(candidate),"-map","0:a:0","-t","1800",
-                     "-ac","2","-ar","24000","-f","f32le","pipe:1"],
+                     "-ac","2","-ar","24000"]
+                if filters:cmd.extend(["-af",",".join(filters)])
+                cmd.extend(["-f","f32le","pipe:1"])
+                proc=subprocess.Popen(cmd,
                     stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+                if gen!=self.generation:
+                    proc.terminate()
+                    return
                 self.running_process=proc
                 block=19200  # 100 ms, 24000 Hz, two channels, float32
                 pending=b""
@@ -89,8 +108,18 @@ class MeasuredPlaybackVU:
             self.meter.set_levels(0,0,0,0)
             return
         second=max(0,player._position())/1000
-        index=min(len(self.levels)-1,int(second*10))
-        self.meter.set_levels(*self.levels[index])
+        index=int(second*10)
+        if index>=len(self.levels):
+            # No mantener artificialmente el último bloque cuando el
+            # análisis aún no alcanza el punto de reproducción.
+            self.meter.set_levels(0,0,0,0)
+            return
+        # El ffmpeg analizador mide el PCM ANTES del fader. Corregir la
+        # lectura para mostrar el nivel realmente enviado al reproductor,
+        # manteniendo la escala logarítmica profesional del StereoMeter.
+        software_gain=player.volume.value()/100.
+        self.meter.set_levels(*(min(1.,max(0.,value*software_gain))
+                                for value in self.levels[index]))
     def stop(self):
         self.generation+=1
         old=self.running_process

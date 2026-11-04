@@ -89,7 +89,8 @@ def compact_recorder(main,card,layout):
     main.current_output.setMaximumHeight(26)
     main.current_output.setToolTip("Ruta y estado de la última toma finalizada.")
     layout.addWidget(main.current_output,0)
-    preview.setMinimumHeight(0)
+    preview.setMinimumHeight(66)
+    preview.slider.setMinimumHeight(14)
     layout.addWidget(preview,0)
     for index in (15,16):
         row=widgets[index].layout()

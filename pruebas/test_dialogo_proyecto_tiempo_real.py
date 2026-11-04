@@ -80,7 +80,7 @@ with tempfile.TemporaryDirectory(prefix="stemmidi_dialog_live_") as temp:
     assert not dlg.timer.isActive()
     print("TIMER_STOPS_ON_CLOSE",flush=True)
 
-actual=Path("/media/javi/Recuperacion/1/yo")
+actual=Path("/tmp/stemmidi_test_project/folder")
 if actual.is_dir():
     state=project_status(actual,actual/"yo.stemstudio.json")
     assert state["valid"] and not state["nested_project_dir"]

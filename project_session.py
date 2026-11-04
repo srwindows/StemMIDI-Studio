@@ -172,8 +172,8 @@ def rebase_json(obj,original,clone):
                                     for k,v in obj.items()}
     return obj
 
-def clone_project(root,new_parent,new_name):
-    """Guardar como: nuevo proyecto independiente, copiado íntegramente."""
+def clone_project(root,new_parent,new_name,progress=None):
+    """Guardar como: nuevo proyecto independiente y progreso por bytes reales."""
     from project_flow import slug_name,atomic_json
     from project_layout import normalize_location,project_folder_name
     root=Path(root).resolve();new_parent=Path(new_parent).expanduser().resolve()
@@ -191,9 +191,33 @@ def clone_project(root,new_parent,new_name):
     for item in root.rglob("*"):
         if item.is_symlink():
             raise ValueError("Guardar como no admite enlaces externos: "+str(item))
+    if progress is not None:
+        progress.stage("Destino del nuevo proyecto validado")
     copied=False
     try:
-        shutil.copytree(root,staging,symlinks=False)
+        copied_count=[0]
+        def copy_with_progress(source,dest):
+            if progress is None:
+                return shutil.copy2(source,dest)
+            src=Path(source)
+            copied_count[0]+=1
+            progress.begin_media(src.name,src.stat().st_size)
+            with src.open("rb") as input_stream,open(dest,"wb") as output_stream:
+                while True:
+                    chunk=input_stream.read(1024*1024)
+                    if not chunk:break
+                    output_stream.write(chunk)
+                    progress.copied(len(chunk))
+                output_stream.flush();os.fsync(output_stream.fileno())
+            shutil.copystat(src,dest)
+            if src.stat().st_size!=Path(dest).stat().st_size:
+                raise OSError("La copia del proyecto no coincide con el original: "+src.name)
+            progress.end_media(src.name)
+            return dest
+        shutil.copytree(root,staging,symlinks=False,
+                        copy_function=copy_with_progress)
+        if progress is not None:
+            progress.stage(f"{copied_count[0]} archivos del proyecto copiados")
         # Reescribir todos los manifiestos JSON que contienen rutas absolutas
         # a los medios duplicados, sin cambiar notas, muestras ni archivos.
         for f in staging.rglob("*.json"):
@@ -207,6 +231,7 @@ def clone_project(root,new_parent,new_name):
                     changed["project_id"]=uuid4().hex
                     changed["project_dir"]=str(new_dir)
                 atomic_json(f,changed)
+        if progress is not None:progress.stage("Metadatos y rutas internas adaptados")
         # Mantener SOLO un manifiesto principal de proyecto.
         manifests=[f for f in staging.glob("*.stemstudio.json")]
         if len(manifests)!=1:
@@ -218,6 +243,8 @@ def clone_project(root,new_parent,new_name):
         new_id=uuid4().hex
         doc["project_id"]=new_id
         atomic_json(new_manifest,doc)
+        if progress is not None:progress.stage("Identificador nuevo y manifiesto verificados")
+        if progress is not None:progress.allow_cancel(False)
         if use_selected_empty:
             # El directorio seleccionado se ha comprobado vacío justo al
             # principio. Revalidarlo antes del renombrado, sin tocar archivos.
@@ -230,6 +257,7 @@ def clone_project(root,new_parent,new_name):
             if use_selected_empty:new_dir.mkdir(exist_ok=True)
             raise
         copied=True
+        if progress is not None:progress.stage("Copia independiente creada")
         return new_dir/(component+".stemstudio.json")
     finally:
         if not copied and staging.exists():shutil.rmtree(staging)

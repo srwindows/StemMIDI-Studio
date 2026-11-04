@@ -12,7 +12,7 @@ from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QDialog, QFrame, QWidget, QPushButton, QLabel, QVBoxLayout, QHBoxLayout,
     QGridLayout, QComboBox, QLineEdit, QDoubleSpinBox, QSlider, QCheckBox,
-    QSizePolicy, QGraphicsDropShadowEffect, QApplication
+    QMenu, QSizePolicy, QGraphicsDropShadowEffect, QApplication
 )
 from PySide6.QtGui import QColor
 
@@ -70,7 +70,8 @@ QFrame#studioCard[expandedCard="true"] QLabel#floatingTitle {
 
 class FloatingCard(QDialog):
     def __init__(self,manager,card):
-        super().__init__(manager.home.main,Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        # Mantener el diseño propio, sin barra ni controles del sistema.
+        super().__init__(manager.home.main,Qt.Tool | Qt.FramelessWindowHint)  # Solo sobre StemMIDI, no sobre Firefox/Dolphin
         self.manager=manager
         self.card=card
         self.setObjectName("floatingModuleWindow")
@@ -95,6 +96,47 @@ class FloatingCard(QDialog):
         self._moving=False
         self._start_global=QPoint()
         self._start_position=QPoint()
+        # La cabecera azul y el margen superior son los únicos asideros.
+        self.setMouseTracking(True)
+        self.frame.setMouseTracking(True)
+        self.frame.installEventFilter(manager)
+
+    def _drag_start(self,event):
+        # En X11/XWayland usamos arrastre por coordenadas, sin depender de
+        # _NET_WM_MOVERESIZE: preserva la ventana sin decoraciones y funciona
+        # también cuando la cabecera es un QPushButton.
+        self._moving=True
+        self._start_global=event.globalPosition().toPoint()
+        self._start_position=self.pos()
+        if QApplication.platformName()=="wayland":
+            # Wayland no permite mover libremente un top-level desde move().
+            # El movimiento nativo requiere el serial de pulsación real.
+            handle=self.windowHandle()
+            if handle is not None and handle.startSystemMove():
+                self._moving=False
+        return True
+
+    def _drag_move(self,event):
+        if not self._moving:return False
+        self.move(self._start_position + event.globalPosition().toPoint()-self._start_global)
+        return True
+
+    def mousePressEvent(self,event):
+        if event.button()==Qt.LeftButton and event.position().y()<75:
+            self._drag_start(event);event.accept()
+        else:super().mousePressEvent(event)
+
+    def mouseMoveEvent(self,event):
+        if self._drag_move(event):event.accept()
+        else:super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self,event):
+        if self._moving:
+            self._drag_move(event)
+            self._moving=False
+            event.accept()
+        else:super().mouseReleaseEvent(event)
+
     def keyPressEvent(self,event):
         if event.key()==Qt.Key_Escape:
             # Ningún cierre alternativo: el candado devuelve la tarjeta.
@@ -108,15 +150,10 @@ class FloatingCard(QDialog):
         else:super().closeEvent(event)
 
     def hideEvent(self,event):
+        # KDE puede ocultar transitoriamente las ventanas Qt.Tool cuando se
+        # minimiza o cambia el foco de la principal. No cerrar ni devolver
+        # al grid el panel por ese evento: sólo el candado/Escape lo hacen.
         super().hideEvent(event)
-        if (self.manager.is_detached(self.card)
-                and not self.manager._closing_all
-                and self.manager._help_owner is not self.card):
-            QTimer.singleShot(0,self._ensure_reachable)
-
-    def _ensure_reachable(self):
-        if self.manager.is_detached(self.card) and not self.isVisible():
-            self.manager.redock(self.card)
 
 class CardManager(QObject):
     def __init__(self,home):
@@ -133,6 +170,10 @@ class CardManager(QObject):
         self._closing_all=False
         self._help_owner=None
         self._extra_sep_widgets=[]
+        from separator_listen import SeparatorListen
+        self.home._sep_listen=SeparatorListen(self.home)
+        self._mini_players={}
+        self._mini_buttons={}
         for card in self.cards:
             lock=QPushButton(card)
             lock.setObjectName("homeLockButton")
@@ -145,8 +186,10 @@ class CardManager(QObject):
             heading=card.layout().itemAt(0).layout()
             heading.insertWidget(1,lock)
             card.lock_button=lock
+            self._install_card_play_controls(card,heading)
             lock.clicked.connect(lambda checked=False, c=card:self.toggle(c))
-            card.header.setCursor(Qt.PointingHandCursor)
+            card.header.setCursor(Qt.OpenHandCursor)
+            card.header.setToolTip("Arrastra este título para mover el módulo flotante")
             card.help_button.setCursor(Qt.PointingHandCursor)
             card.header.installEventFilter(self)
             card.help_button.clicked.connect(lambda checked=False, c=card:
@@ -157,9 +200,180 @@ class CardManager(QObject):
         self._rescue_shortcut.activated.connect(self.recover_all)
         self._install_sep_extra()
         self._install_other_expanders()
+        # Cerrado: Resultados solo tiene inventario + Play/Pausa/Stop.
+        from results_dragdrop import set_compact_results
+        set_compact_results(self.home,True)
+        # Vista de audio: transporte compacto SIEMPRE visible con candado
+        # cerrado. Al ampliarla aparece el transporte completo de abajo.
+        from floating_transport import FloatingTransport
+        self.docked_wave_transport=FloatingTransport(home,"wave",home.wave_card)
+        self.docked_wave_transport.set_docked_mode()
+        home.wave.setMinimumHeight(41)
+        home.wave_card.inner.addWidget(self.docked_wave_transport)
         for klass in (QPushButton,QCheckBox,QComboBox,QSlider,QDoubleSpinBox):
             for widget in home.findChildren(klass):
                 widget.setCursor(Qt.PointingHandCursor)
+
+    def _transport_position(self,card,kind):
+        """Situar la reproducción EN el formulario, nunca junto al candado.
+
+        Mantener cada control original en su propio módulo y sin crear filas
+        adicionales cuando hay una etiqueta o barra que admite los botones.
+        """
+        inner=card.inner
+        if kind in ("sep","drums","vocal"):
+            captions={"sep":"Modelo de separación",
+                      "drums":"Pista de batería del proyecto",
+                      "vocal":"Voz del proyecto"}
+            caption_text=captions[kind]
+            index=next((i for i in range(inner.count())
+                        if isinstance(inner.itemAt(i).widget(),QLabel)
+                        and inner.itemAt(i).widget().text()==caption_text),-1)
+            if kind=="sep":
+                # Este módulo YA está bien. Mantener su fila intacta.
+                row=next((inner.itemAt(i).layout() for i in range(inner.count())
+                          if isinstance(inner.itemAt(i).layout(),QHBoxLayout)
+                          and inner.itemAt(i).layout().count()>0
+                          and inner.itemAt(i).layout().itemAt(0).widget() is not None
+                          and inner.itemAt(i).layout().itemAt(0).widget().text()==caption_text),None)
+                if row is not None:
+                    return row
+            if index<0:raise RuntimeError("No se encuentra "+caption_text)
+            caption=inner.takeAt(index).widget()
+            row=QHBoxLayout()
+            row.setContentsMargins(0,0,0,0)
+            row.setSpacing(5)
+            row.addWidget(caption)
+            row.addStretch(1)
+            inner.insertLayout(index,row)
+            return row
+        if kind=="midi":
+            # La fila Preset se estrecha al reducir la ventana. En cambio
+            # "Detectar acordes" tiene hueco a la derecha, sin ganar altura
+            # ni reducir los controles de conversión.
+            index=next((i for i in range(inner.count())
+                        if isinstance(inner.itemAt(i).widget(),QCheckBox)
+                        and inner.itemAt(i).widget().text()=="Detectar acordes → MIDI aparte"),-1)
+            if index<0:raise RuntimeError("Casilla de detección de acordes no encontrada")
+            checkbox=inner.takeAt(index).widget()
+            row=QHBoxLayout()
+            row.setContentsMargins(0,0,0,0)
+            row.setSpacing(3)
+            row.addWidget(checkbox)
+            row.addStretch(1)
+            inner.insertLayout(index,row)
+            return row
+        if kind in ("mixer","piano"):
+            # Barras superiores con espacio propio para la preescucha.
+            index=1 if inner.itemAt(0).widget() is not None else 0
+            row=inner.itemAt(index).layout()
+            if not isinstance(row,QHBoxLayout):
+                raise RuntimeError("Barra superior no encontrada: "+kind)
+            return row
+        if kind in ("tracks","drum_stems"):
+            # Las filas tienen ya sus Play/Stop por pista; situar el control
+            # general en un renglón compacto sin invadir ninguna onda.
+            row=QHBoxLayout()
+            row.setContentsMargins(0,0,0,0)
+            row.setSpacing(3)
+            caption=QLabel("Escucha general",card)
+            caption.setStyleSheet("color:#9bdffc;font-size:10px;")
+            row.addWidget(caption)
+            row.addStretch(1)
+            insert_at=next((i for i in range(inner.count())
+                            if isinstance(inner.itemAt(i).layout(),QHBoxLayout)),1)
+            inner.insertLayout(insert_at,row)
+            return row
+        raise RuntimeError("Transporte sin sitio válido: "+kind)
+
+    def _install_card_play_controls(self,card,heading):
+        """Controles de escucha visibles con candado cerrado, cabecera limpia."""
+        if card in (self.home.mon_card,self.home.wave_card,
+                    self.home.info_card,self.home.result_card):
+            # Resultados ya incluye Play/Stop/Pausa de forma permanente.
+            # Evitar un transporte duplicado sobre su título.
+            return
+        kind=dict(zip(self.cards,("monitor","sep","midi","results",
+            "wave","drums","tracks","mixer","piano","vocal",
+            "drum_stems","info")))[card]
+        row=self._transport_position(card,kind)
+        buttons=[]
+        for label,tooltip,fn in (
+            ("▶","Reproducir preescucha",lambda c=card,k=kind:self._mini_action(c,k,"play")),
+            ("Ⅱ","Pausar preescucha",lambda c=card,k=kind:self._mini_action(c,k,"pause")),
+            ("■","Detener preescucha",lambda c=card,k=kind:self._mini_action(c,k,"stop"))):
+            b=QPushButton(label,card)
+            b.setObjectName("homeMiniTransport")
+            b.setCursor(Qt.PointingHandCursor)
+            b.setToolTip(tooltip)
+            b.setFixedSize(32 if kind=="sep" else 22,29 if kind=="sep" else 22)
+            b.setStyleSheet("QPushButton#homeMiniTransport{padding:0px;"
+                "background:#073366;border:1px solid #239de0;"
+                "border-radius:4px;color:#b9efff;font-size:12px;}")
+            if kind=="mixer":
+                # Dejarlos junto a la etiqueta "Escucha", a la izquierda,
+                # con aire entre ellos y Restablecer.
+                row.insertWidget(len(buttons),b)
+            else:
+                row.addWidget(b)
+            b.clicked.connect(fn)
+            buttons.append(b)
+        if kind=="mixer":
+            caption=QLabel("Escucha",card)
+            caption.setStyleSheet("color:#9bdffc;font-size:10px;")
+            row.insertWidget(0,caption)
+        self._mini_buttons[card]=buttons
+        if kind=="sep":
+            select=QPushButton("♫",card)
+            select.setObjectName("homeMiniTransport")
+            select.setToolTip("Elegir pistas que suenan (independiente de extraer)")
+            select.setFixedSize(32,29)
+            select.setStyleSheet(buttons[0].styleSheet())
+            menu=QMenu(select)
+            self._mini_sep_menu=menu
+            for name in ("Original","Voces","Batería","Bajo",
+                         "Guitarra","Piano","Viento","Otros"):
+                action=menu.addAction(name)
+                action.setCheckable(True)
+                action.triggered.connect(
+                    lambda checked,n=name:self.home._sep_listen.set_enabled(n,checked))
+            def refresh():
+                available=self.home._sep_listen.available()
+                for action in menu.actions():
+                    action.setChecked(action.text() in self.home._sep_listen.selected)
+                    action.setEnabled(available.get(action.text()) is not None)
+            menu.aboutToShow.connect(refresh)
+            select.setMenu(menu)
+            row.addWidget(select)
+            buttons.append(select)
+
+    def _mini_action(self,card,kind,action):
+        if kind=="sep":
+            if action=="play":self.home._sep_listen.play()
+            elif action=="stop":self.home._sep_listen.stop()
+            else:self.home._sep_listen.pause()
+            return
+        window=self.windows.get(card)
+        transport=getattr(window,"float_transport",None) if window else None
+        if transport is None:
+            transport=self._mini_players.get(card)
+            if transport is None:
+                from floating_transport import FloatingTransport
+                transport=FloatingTransport(self.home,kind,self.home.main)
+                transport.timer.stop()
+                transport.hide()
+                self._mini_players[card]=transport
+            if transport.track_select:
+                rows=(self.home.drum_stem_rows if kind in ("drums","drum_stems")
+                      else self.home.track_rows)
+                if kind in ("drums","drum_stems","mixer"):
+                    first=next((n for n in rows if rows[n]["path"] is not None
+                                and Path(rows[n]["path"]).is_file()),None)
+                    if first:transport.track_select.setCurrentText(first)
+                # Pistas separadas requiere elección MANUAL; no forzar Voces.
+        if action=="play":transport.play_selected()
+        elif action=="pause":transport.pause_selected()
+        else:transport.stop_selected()
 
     def _install_sep_extra(self):
         from home_separation_expanded import ExpandedSeparator
@@ -190,7 +404,7 @@ class CardManager(QObject):
         if owner is None:return
         self._help_owner=card
         try:
-            dlg.setParent(owner, Qt.Dialog | Qt.WindowStaysOnTopHint)
+            dlg.setParent(owner, Qt.Dialog)  # Dialogo encima de su módulo, no global
             dlg.setWindowModality(Qt.WindowModal)
             dlg.show()
             dlg.raise_()
@@ -233,25 +447,36 @@ class CardManager(QObject):
             if helpdlg is not None:
                 helpdlg.hide()
             self.recover_all()
+            self.sep_expander.voice_task.stop()
+            self.home._sep_listen.cleanup()
+            for transport in self._mini_players.values():transport.cleanup()
         finally:
             self._closing_all=False
 
     def detach(self,card):
         if card in self.windows:return
-        original_layout=card.parentWidget().layout()
-        # El QHBoxLayout de la cuadrícula contiene la Card directamente.
-        # Puede estar anidado en un QVBoxLayout: localizar el QLayoutItem real.
-        root=self.home.page.layout()
-        rows=[root.itemAt(i).layout() for i in range(root.count())]
-        source=next((lay for lay in rows if lay is not None and lay.indexOf(card)>=0),None)
+        if card is self.home.wave_card:
+            self.docked_wave_transport.hide()
+            self.home.wave.setMinimumHeight(96)
+        for button in self._mini_buttons.get(card,()):button.hide()
+        # Ambas distribuciones usan QHBoxLayout: la posición se conserva
+        # mediante placeholder para que el resto mantenga ancho y fila.
+        workspace=getattr(self.home,"home_workspace",None)
+        free=(workspace is not None and workspace.is_free
+              and card.parentWidget() in workspace.row_surfaces)
+        rows=(list(workspace.row_layouts) if free else
+              [c.layout() for c in self.home._factory_containers])
+        source=next((lay for lay in rows
+                     if lay is not None and lay.indexOf(card)>=0),None)
         if source is None:return
         original_index=source.indexOf(card)
-        from PySide6.QtWidgets import QSpacerItem
-        placeholder=QFrame(self.home.page)
+        placeholder=QFrame(card.parentWidget() if free else self.home.page)
         placeholder.setObjectName("floatingPlaceholder")
         placeholder.setStyleSheet(
-            "QFrame#floatingPlaceholder{background:#031739;border:1px dashed #2bb1fc;border-radius:8px;}")
-        placeholder.setToolTip("Módulo ampliado · pulsa su candado abierto para recuperarlo.")
+            "QFrame#floatingPlaceholder{background:#031739;"
+            "border:1px dashed #2bb1fc;border-radius:8px;}")
+        placeholder.setToolTip(
+            "Módulo ampliado · pulsa el candado para recuperarlo.")
         placeholder.setMinimumSize(card.minimumSize())
         placeholder.setMaximumSize(card.maximumSize())
         place=source.replaceWidget(card,placeholder)
@@ -276,12 +501,28 @@ class CardManager(QObject):
         for button in card.findChildren(QPushButton):
             button.setCursor(Qt.PointingHandCursor)
         floatwin.setStyleSheet(FLOAT_STYLE)
+        # El popup no debe seguir siendo hijo gráfico de Inicio.
+        self._native_floating_popups(card)
         large=card in (self.home.mon_card,self.home.midi_card,
                        self.home.track_card,self.home.mix_card,self.home.piano_card,
-                       self.home.vocal_card,self.home.drum_stems_card)
-        target=QSize(940 if card is self.home.sep_card else 870 if large else 800,
-                     735 if card is self.home.sep_card else 830 if card is self.home.mon_card else 720 if large else 615)
+                       self.home.vocal_card,self.home.drum_stems_card,
+                       self.home.info_card)
+        target=QSize(1260 if card is self.home.piano_card else
+                     1190 if card is self.home.info_card else
+                     1050 if card is self.home.vocal_card else
+                     940 if card is self.home.sep_card else 870 if large else 800,
+                     1030 if card is self.home.piano_card else
+                     1004 if card is self.home.info_card else
+                     925 if card is self.home.vocal_card else
+                     735 if card is self.home.sep_card else
+                     930 if card is self.home.mon_card else
+                     720 if large else 615)
         bounds=QApplication.primaryScreen().availableGeometry()
+        if card is self.home.piano_card:
+            # Evita que una ventana pequeña comprima tres columnas de
+            # ajustes. En pantallas pequeñas se adapta a su espacio útil.
+            floatwin.setMinimumSize(min(1080,bounds.width()-30),
+                                    min(970,bounds.height()-30))
         floatwin.resize(min(target.width(),bounds.width()-30),
                         min(target.height(),bounds.height()-30))
         floatwin.move(bounds.center()-QPoint(floatwin.width()//2,floatwin.height()//2))
@@ -293,9 +534,24 @@ class CardManager(QObject):
             self.sep_expander.expand()
         else:
             self.other_expanders[card].expand()
+        if card is self.home.result_card:
+            from results_dragdrop import set_compact_results
+            set_compact_results(self.home,False)
+        router=getattr(self.home,"_result_file_drag_router",None)
+        if router is not None and card in router.card_kind:
+            if router.card_kind[card] not in ("monitor","results","tracks","drum_stems"):
+                router.attach(card)
+        # Un editor profesional puede estar acoplado a la pestaña y
+        # trasladarse a la tarjeta SOLO durante expand(). Los popups Qt
+        # de sus combos nacían en la QGraphicsScene de Inicio: volver a
+        # liberarlos AHORA, después del traslado, para que aparezcan
+        # junto al desplegable de la ventana flotante.
+        self._native_floating_popups(card)
         # Reproductor local en la ventana: no accede a ninguna otra pestaña.
         # Grabación ya posee REC/Play+VU propios, por lo que no se duplica.
-        if card is not self.home.mon_card:
+        if card is not self.home.mon_card and card is not self.home.info_card:
+            # «MIDI a audio» tiene su propio transporte completo:
+            # no añadir otra franja de reproducción duplicada.
             from floating_transport import FloatingTransport
             names=dict(zip(self.cards,(
                 "monitor","sep","midi","results","wave","drums",
@@ -304,11 +560,47 @@ class CardManager(QObject):
             floatwin.body.addWidget(strip,0)
             floatwin.float_transport=strip
             screen=QApplication.primaryScreen().availableGeometry()
-            desired=985 if names[card] in (
-                "sep","tracks","mixer","drum_stems") else 850
+            desired=(1030 if names[card]=="piano" else
+                930 if names[card]=="vocal" else
+                985 if names[card] in ("sep","mixer","drum_stems") else
+                900 if names[card]=="midi" else
+                545 if names[card]=="tracks" else 850)
             floatwin.resize(floatwin.width(),min(desired,screen.height()-28))
             floatwin.move(screen.center()-QPoint(floatwin.width()//2,floatwin.height()//2))
             strip.show()
+
+    def _native_floating_popups(self,card):
+        """Soltar los popup Qt de la QGraphicsScene de Inicio al separar
+        una tarjeta. La escena puede conservar QGraphicsProxyWidgets incluso
+        después de setParent(floatwin), haciendo que los menús aparezcan en
+        coordenadas de Inicio (fuera de la ventana emergente).
+        """
+        from PySide6.QtWidgets import QMenu
+        for combo in card.findChildren(QComboBox):
+            try:
+                widget=combo.view().window()
+                self._detach_popup_proxy(widget)
+                widget.installEventFilter(self)
+            except RuntimeError:
+                continue
+        for menu in card.findChildren(QMenu):
+            try:
+                self._detach_popup_proxy(menu)
+                menu.installEventFilter(self)
+            except RuntimeError:
+                continue
+
+    def _detach_popup_proxy(self,popup):
+        try:
+            proxy=popup.graphicsProxyWidget()
+            scene=getattr(self.home.scroll,"scene",lambda:None)()
+            if proxy is not None and proxy.scene() is scene:
+                # Importante: no eliminar el popup ni destruir la tarjeta.
+                # setWidget(None) lo devuelve a Qt como popup nativo.
+                proxy.setWidget(None)
+        except RuntimeError:
+            # Qt puede haber destruido un proxy previo al cerrar el menú.
+            pass
 
     def redock(self,card):
         if card not in self.windows:return
@@ -333,10 +625,21 @@ class CardManager(QObject):
             self.sep_expander.collapse()
         else:
             self.other_expanders[card].collapse()
+        if card is self.home.result_card:
+            from results_dragdrop import set_compact_results
+            set_compact_results(self.home,True)
         window.body.removeWidget(card)
-        card.setParent(self.home.page)
+        workspace=getattr(self.home,"home_workspace",None)
+        in_free=(workspace is not None and workspace.is_free
+                 and source in workspace.row_layouts)
+        if in_free:
+            row_index=next((i for i,layout in enumerate(workspace.row_layouts)
+                            if layout is source),0)
+            card.setParent(workspace.row_surfaces[row_index])
+        else:
+            card.setParent(self.home.page)
         if source.replaceWidget(placeholder,card) is None:
-            source.insertWidget(idx,card)
+            source.insertWidget(idx,card,1 if in_free else 0)
         placeholder.deleteLater()
         card.setMinimumSize(minimum)
         card.setMaximumSize(maximum)
@@ -347,29 +650,50 @@ class CardManager(QObject):
         card.lock_button.setIcon(lock_icon(False))
         card.lock_button.setToolTip("Desbloquear · ampliar y separar este módulo")
         card.show()
+        if in_free and workspace is not None:
+            workspace._arrange()
+            workspace._sync_controls()
+        if card is self.home.wave_card:
+            self.home.wave.setMinimumHeight(41)
+            self.docked_wave_transport.show()
+        for button in self._mini_buttons.get(card,()):button.show()
         window.hide()
         window.deleteLater()
 
     def eventFilter(self,obj,event):
-        # Pulsar cabecera mientras está ampliada arrastra, no navega de pestaña.
+        # Interceptar menús creados tras desacoplar la tarjeta, además de
+        # los que ya existían antes de abrir el candado.
+        if event.type()==QEvent.Show and isinstance(obj,QWidget):
+            parent=obj.parentWidget()
+            while parent is not None:
+                if any(parent is card or parent is window
+                       for card,window in tuple(self.windows.items())):
+                    self._detach_popup_proxy(obj)
+                    break
+                parent=parent.parentWidget()
+        # Tanto el título como el margen superior son asideros. En Qt6 los
+        # eventos MouseMove pueden venir del marco o del título, por eso
+        # hay una única coordenada global para arrastrar sin saltos.
         for card,window in tuple(self.windows.items()):
-            if obj is card.header:
-                if event.type()==QEvent.MouseButtonPress and event.button()==Qt.LeftButton:
-                    window._moving=True
-                    window._start_global=event.globalPosition().toPoint()
-                    window._start_position=window.pos()
-                    return True
-                if event.type()==QEvent.MouseMove and window._moving:
-                    diff=event.globalPosition().toPoint()-window._start_global
-                    window.move(window._start_position+diff)
-                    return True
-                if event.type()==QEvent.MouseButtonRelease and window._moving:
-                    window._moving=False
-                    return True
+            grip=(obj is card.header or obj is window.frame)
+            if not grip:continue
+            if event.type()==QEvent.MouseButtonPress and event.button()==Qt.LeftButton:
+                if obj is window.frame and event.position().y()>36:
+                    return False
+                window._drag_start(event)
+                return True
+            if event.type()==QEvent.MouseMove and window._moving:
+                return window._drag_move(event)
+            if event.type()==QEvent.MouseButtonRelease and window._moving:
+                window._drag_move(event)
+                window._moving=False
+                return True
         return False
 
 def enable(home):
     home._floating_manager=CardManager(home)
+    from results_dragdrop import install as install_result_dragdrop
+    install_result_dragdrop(home)
     import dialog_guard
     dialog_guard.bind_manager(home._floating_manager)
     return home._floating_manager

@@ -110,6 +110,12 @@ def lbl(text, muted=False):
 class MonitorWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        # Solo la ventana PRINCIPAL: retirar barra de título y bordes de KDE.
+        # La cabecera azul ya contiene botones propios de minimizar/max/cerrar.
+        self.setWindowFlag(Qt.FramelessWindowHint, True)
+        self.setObjectName("stemMainWindow")
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAutoFillBackground(False)
         # Todos los QMessageBox/QFileDialog/QInputDialog/QDialog del programa
         # comparten propietario y prioridad mientras haya tarjetas flotantes.
         import dialog_guard
@@ -125,6 +131,11 @@ class MonitorWindow(QMainWindow):
         self.config = self.load_config()
         self.input_gain_db=max(-60,min(12,int(self.config.get("input_gain_db",0))))
         self.input_balance=max(-100,min(100,int(self.config.get("input_balance",0))))
+        stored_eq=self.config.get("input_eq",{})
+        if not isinstance(stored_eq,dict):stored_eq={}
+        self.input_eq_enabled=bool(stored_eq.get("enabled",True))
+        self.input_eq_values=tuple(max(-12,min(12,int(stored_eq.get(k,0))))
+            for k in ("bass","mid","treble"))
         self.project_id=uuid4().hex
         self.project_path=None
         self.project_name=None
@@ -260,7 +271,7 @@ class MonitorWindow(QMainWindow):
         self.capture_rate=QComboBox()
         for rate in SAMPLE_RATES:
             self.capture_rate.addItem(f"{rate/1000:g} kHz · estéreo",rate)
-        selected_rate=int(self.config.get("sample_rate",48000))
+        selected_rate=int(self.config.get("sample_rate",44100))
         rate_index=self.capture_rate.findData(selected_rate)
         if rate_index>=0:self.capture_rate.setCurrentIndex(rate_index)
         self.capture_rate.setToolTip(
@@ -453,6 +464,8 @@ class MonitorWindow(QMainWindow):
                 "sample_rate":self.capture_rate.currentData(),
                 "input_gain_db":self.input_gain_db,
                 "input_balance":self.input_balance,
+                "input_eq":dict(zip(("bass","mid","treble"),self.input_eq_values),
+                                 enabled=self.input_eq_enabled),
                 "show_mics":self.show_mics.isChecked()}
 
     def monitor_preset_apply(self,params):
@@ -465,16 +478,24 @@ class MonitorWindow(QMainWindow):
         self.set_input_processing(
             params.get("input_gain_db",self.input_gain_db),
             params.get("input_balance",self.input_balance))
+        eq=params.get("input_eq")
+        if isinstance(eq,dict):
+            self.set_input_eq(eq.get("enabled",False),
+                *(eq.get(k,0) for k in ("bass","mid","treble")))
         if "show_mics" in params:
             self.show_mics.setChecked(bool(params["show_mics"]))
         self.save_config()
 
     def save_config(self):
+        if getattr(self,"project_dir",None) and not getattr(self,"_explicit_save",False):
+            return
         prefs = {
             "format": self.format.currentText(),
             "sample_rate": self.capture_rate.currentData(),
             "input_gain_db": self.input_gain_db,
             "input_balance": self.input_balance,
+            "input_eq":dict(zip(("bass","mid","treble"),self.input_eq_values),
+                             enabled=self.input_eq_enabled),
             "prefix": self.file_prefix.text(),
             "folder": self.folder_display.text(),
             "projects_base":str(getattr(self,"projects_base",
@@ -527,6 +548,21 @@ class MonitorWindow(QMainWindow):
             home.sync_input_controls()
         self.save_config()
 
+    def set_input_eq(self,enabled=True,bass_db=0,mid_db=0,treble_db=0):
+        """Controles de ecualización que afectan la grabación REAL."""
+        self.input_eq_enabled=bool(enabled)
+        self.input_eq_values=tuple(max(-12,min(12,int(v)))
+            for v in (bass_db,mid_db,treble_db))
+        if self.worker is not None:
+            self.worker.set_input_eq(self.input_eq_enabled,*self.input_eq_values)
+        home=getattr(self,"studio_home",None)
+        if home is not None:
+            review=getattr(home,"record_review",None)
+            if review is not None:
+                review.sync_capture_eq(self.input_eq_enabled,self.input_eq_values)
+            home.update_capture_diagnostics()
+        self.save_config()
+
     def start_monitor(self):
         if self.worker and self.worker.isRunning():
             return
@@ -536,7 +572,9 @@ class MonitorWindow(QMainWindow):
             return
         self.worker = CaptureWorker(device, self, sample_rate=self.capture_rate.currentData())
         self.worker.set_input_controls(self.input_gain_db,self.input_balance)
+        self.worker.set_input_eq(self.input_eq_enabled,*self.input_eq_values)
         self.worker.levels.connect(self.on_levels)
+        self.worker.live_listen_state.connect(self.on_processed_listen_state)
         self.worker.visual.connect(self.on_visual)
         self.worker.capture_state.connect(self.on_capture_state)
         self.worker.recording_state.connect(self.on_recording_state)
@@ -567,6 +605,9 @@ class MonitorWindow(QMainWindow):
         self.monitor_button.setText("Iniciar supervisión")
         self.mode.setText("●  DETENIDO")
         self.meter.set_levels(0, 0, 0, 0)
+        if hasattr(self,"studio_home"):
+            self.studio_home.sync_capture_levels(0.,0.,0.,0.)
+            self.studio_home.clear_capture_visual()
         self.spectrum.set_bands([0]*48)
         self.oscillo.set_wave([0]*205)
         self.update_record_button()
@@ -650,7 +691,7 @@ class MonitorWindow(QMainWindow):
         project=project_directory(self)
         if not project:
             raise ValueError("Crea un proyecto antes de grabar")
-        folder=project/"grabaciones"
+        folder=project/"temporales"/"grabaciones"
         folder.mkdir(parents=True,exist_ok=True)
         prefix=slug_name(self.file_prefix.text().strip() or self.project_name or "Grabacion")
         ext, _ = FORMAT_OPTIONS[self.format.currentText()]
@@ -764,6 +805,11 @@ class MonitorWindow(QMainWindow):
 
     def on_capture_state(self, active, message):
         self.statusline.setText(message)
+        if not active:
+            self.meter.set_levels(0,0,0,0)
+            if hasattr(self,"studio_home"):
+                self.studio_home.sync_capture_levels(0.,0.,0.,0.)
+                self.studio_home.clear_capture_visual()
         if not active and message != "Supervisión detenida":
             self.log(message)
 
@@ -780,9 +826,17 @@ class MonitorWindow(QMainWindow):
         if hasattr(self,"studio_home"):
             self.studio_home.sync_capture_levels(l,r,lp,rp)
 
+    def on_processed_listen_state(self,active,message):
+        home=getattr(self,"studio_home",None)
+        if home is not None:
+            home.on_processed_listen_state(active,message)
+
     def on_visual(self, bands, wave):
         self.spectrum.set_bands(bands)
         self.oscillo.set_wave(wave)
+        home=getattr(self,"studio_home",None)
+        if home is not None:
+            home.sync_capture_visual(bands,wave)
 
     def tick(self):
         if self.recording and self.record_started is not None:
@@ -802,6 +856,12 @@ class MonitorWindow(QMainWindow):
             self.clock.setText("00:00:00")
 
     def closeEvent(self, event):
+        converter=getattr(getattr(self,"studio_home",None),"midi_to_audio",None)
+        if converter is not None and converter.busy:
+            QMessageBox.information(self,"MIDI a audio en curso",
+                "Finaliza o cancela la conversión MIDI a audio antes de salir.")
+            event.ignore()
+            return
         from PySide6.QtCore import QProcess
         work=getattr(self,"workbench",None)
         if work is not None:
@@ -819,21 +879,6 @@ class MonitorWindow(QMainWindow):
                 QMessageBox.information(self,"Mezcla en curso",
                     "Finaliza o cancela la exportación antes de cerrar.")
                 event.ignore();return
-            if work.piano.dirty:
-                QMessageBox.information(self,"Piano Roll",
-                    "Aplica la edición temporal o descarta los cambios antes de salir.")
-                self.tabs.setCurrentWidget(work.piano)
-                event.ignore();return
-            work.sep_results.preview.stop()
-            work.midi_results.preview.stop()
-            work.piano.preview.stop()
-        from piano_roll import PianoRollDialog
-        dirty_editors=[e for e in self.findChildren(PianoRollDialog) if e.dirty]
-        if dirty_editors:
-            dirty_editors[0].raise_();dirty_editors[0].activateWindow()
-            QMessageBox.information(self,"Cambios MIDI pendientes",
-                "Guarda o descarta las modificaciones del piano roll antes de cerrar.")
-            event.ignore();return
         separator = getattr(self, "separator_dialog", None)
         if separator is not None:
             sep_midi = getattr(separator, "midi_dialog", None)
@@ -860,6 +905,17 @@ class MonitorWindow(QMainWindow):
                 "Así se mantiene protegida la toma original.")
             event.ignore()
             return
+        # El cierre no puede abandonar silenciosamente motores que estaban
+        # en pestañas o ventanas flotantes fuera de los controles anteriores.
+        for module in (getattr(self,"drum_module",None),
+                       getattr(self,"vocal_module",None)):
+            if module is not None:
+                proc=getattr(module,"process",None)
+                if proc is not None and proc.state()!=QProcess.NotRunning:
+                    QMessageBox.information(self,"Operación en curso",
+                        "Cancela o termina el procesamiento del módulo antes de salir.")
+                    event.ignore()
+                    return
         if self.recording or self.record_pending:
             ans = QMessageBox.question(
                 self, "Finalizar grabación",
@@ -868,24 +924,54 @@ class MonitorWindow(QMainWindow):
             if ans != QMessageBox.Yes:
                 event.ignore()
                 return
+        # Antes de cualquier limpieza o parada de audio, proteger el
+        # proyecto activo. «Cancelar» y los errores de guardado no tocan la
+        # sesión ni el estado de reproducción.
+        from project_exit_guard import confirm_exit
+        if not confirm_exit(self):
+            event.ignore()
+            return
+        # confirm_exit fija la elección inequívoca del usuario.
+        if getattr(self,"_exit_decision",None)=="discard":
+            from project_transaction import discard
+            try:
+                discard(self)
+            except (OSError,ValueError) as exc:
+                QMessageBox.warning(self,"No se pudo descartar la sesión",str(exc))
+                event.ignore()
+                return
+        if work is not None:
+            work.sep_results.preview.stop()
+            work.midi_results.preview.stop()
+            work.piano.preview.stop()
         # Desacoplar no puede dejar ventanas de nivel superior vivas al cerrar:
         # Qt mantendría su bucle de eventos y parecería que hay que forzar el cierre.
         home=getattr(self,"studio_home",None)
         if home is not None:
             manager=getattr(home,"_floating_manager",None)
             if manager is not None:manager.shutdown()
+        converter=getattr(getattr(self,"studio_home",None),"midi_to_audio",None)
+        if converter is not None:converter.close_cleanup()
+        global_midi=getattr(self,"studio_midi_transport",None)
+        if global_midi is not None:global_midi.cleanup()
         self.record_preview.cleanup()
         self.recording_lab.close_cleanup()
         home=getattr(self,"studio_home",None)
         if home is not None:
             home.heartbeat.stop()
             home.player.cleanup()
-            for canvas in [home.wave,home.overview]+[
-                row["wave"] for row in home.track_rows.values()]:
+            # El cierre histórico limpiaba las ondas generales, pero NO
+            # las 6 ondas de batería ni las ondas dinámicas de resultados.
+            # Evitar que sobrevivan procesos ffmpeg al destruir los widgets.
+            from studio_home import WaveCanvas
+            for canvas in home.findChildren(WaveCanvas):
                 canvas.cancel_decode()
         if AudioRoute.before_preview==self.stop_monitor_for_preview:
             AudioRoute.before_preview=None
-        self.save_config()
+        if getattr(self,"_exit_decision",None)=="save":
+            self._explicit_save=True
+            try:self.save_config()
+            finally:self._explicit_save=False
         if self.worker:
             self.worker.stop_capture()
             if not self.worker.wait(10000):
@@ -893,26 +979,53 @@ class MonitorWindow(QMainWindow):
                                     "El motor todavía está finalizando. Prueba a cerrar de nuevo.")
                 event.ignore()
                 return
-        if work is not None:
-            # Guardar los BPM y filtros elegidos aunque el usuario solo
-            # analice el tempo sin llegar a convertir un archivo.
+        # No escribir preferencias de la sesión descartada.
+        if work is not None and getattr(self,"_exit_decision",None)=="save":
             work.converter.save_preferences()
             work.separator.save_preferences()
         if home is not None and getattr(home,"record_review",None) is not None:
             home.record_review.cleanup()
+        # Defensa final para procesos auxiliares que pertenecen a paneles
+        # dinámicos. No se ejecuta hasta que el usuario haya confirmado
+        # la salida y se hayan protegido/guardado sus datos.
+        # Some independently docked workbench panels own their own
+        # top-level QWidget, which is NOT a QObject descendant of main.
+        # Closing the main window must clean those FFmpeg wave decoders
+        # as well, or Qt destroys still-running child QProcesses.
+        from PySide6.QtWidgets import QApplication
+        from studio_home import WaveCanvas
+        roots=QApplication.topLevelWidgets()
+        for root in roots:
+            for canvas in root.findChildren(WaveCanvas):
+                try:canvas.cancel_decode()
+                except RuntimeError:pass
+        for root in roots:
+            for process in root.findChildren(QProcess):
+                try:
+                    if process.state()!=QProcess.NotRunning:
+                        process.blockSignals(True)
+                        process.kill()
+                        process.waitForFinished(1800)
+                except RuntimeError:
+                    pass
         event.accept()
 
 
 if __name__ == "__main__":
-    from intro_video import play_external_intro, play_intro
-    # Arranque común para fuentes y compilación: primero la intro, después Qt.
-    external_intro_ok = play_external_intro()
-    app = QApplication(sys.argv)
+    # Mismo binario para el renderizador offline: sin interfaz ni intro.
+    if "--stemmidi-render" in sys.argv:
+        from midi_offline_render import cli
+        sys.exit(cli())
+    from intro_video import start_external_intro,finish_external_intro,play_intro
+    # La intro y la carga de widgets transcurren en paralelo. Nunca
+    # recortar el vídeo ni mostrar una ventana que lo tape.
+    intro_process=start_external_intro()
+    app=QApplication(sys.argv)
     app.setApplicationName("StemMIDI Studio")
     app.setStyle("Fusion")
     app.setStyleSheet(STYLE)
-    if not external_intro_ok:
+    window=MonitorWindow()
+    if not finish_external_intro(intro_process):
         play_intro()  # Respaldo Qt si FFplay no está disponible.
-    window = MonitorWindow()
     window.show()
     sys.exit(app.exec())

@@ -222,16 +222,25 @@ class ConsoleStrip(QFrame):
             "border:1px solid #2bb1fc;border-radius:7px;}")
 
     def update_audio_peak(self,playing,path,position_ms):
-        if not playing or not self.path or path!=self.path or not self.wave.data:
+        # La onda del editor contiene envolventes normalizadas y NO es
+        # una medida de volumen. Usar exclusivamente RMS del PCM que el
+        # mismo PreviewPlayer manda a la salida de audio.
+        if not playing or not self.path or path!=self.path:
             self.meter.set_db(-72.)
             return
-        points=self.wave.data
-        duration=max(1.,self.wave.duration_seconds)
-        i=int((position_ms/1000)/duration*len(points))
-        lo=max(0,i-9);hi=min(len(points),i+10)
-        amplitude=max(points[lo:hi],default=0.)
-        amplitude*=10**(self.studio.channels[self.part]["gain"]/20)
-        self.meter.set_db(20*math.log10(max(amplitude,0.0001)))
+        player=getattr(self.studio.drum,"preview",None)
+        measured=getattr(player,"_measured_vu",None)
+        index=int(max(0,position_ms)/100)
+        if measured is None or index>=len(measured.levels):
+            self.meter.set_db(-72.)
+            return
+        rms=max(measured.levels[index][:2])
+        gain=player.volume.value()/100.
+        # El deslizador de ganancia de este editor aún se aplica en
+        # mezcla/exportación, NO a la preescucha individual: el VU no
+        # debe afirmar que el usuario oye un nivel que no sale por audio.
+        amplitude=rms*gain
+        self.meter.set_db(20*math.log10(max(amplitude,1e-8)))
 
 class ChannelInspector(QFrame):
     """Inspector inferior horizontal, con proporciones equivalentes a Inicio."""

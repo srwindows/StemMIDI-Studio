@@ -9,7 +9,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, QTimer, QUrl, QMimeData
+from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, QTimer, QUrl, QMimeData, Signal
 from PySide6.QtGui import QDesktopServices, QDrag
 from audio_import import probe_audio, describe_audio, supported_candidate
 from audio_import_gui import DropPathEdit, pick_audio, check_and_describe
@@ -85,6 +85,8 @@ class StemDropBox(QFrame):
 
 
 class AudioMidiDialog(QDialog):
+    progressEvent=Signal(dict)
+
     def __init__(self, parent=None, file_path=None, stems_folder=None):
         super().__init__(parent)
         self.setAttribute(Qt.WA_DeleteOnClose)
@@ -92,6 +94,7 @@ class AudioMidiDialog(QDialog):
         self.resize(1020, 800)
         self.setMinimumSize(800, 620)
         self.process=None
+        self._home_queue_busy=False
         self.embedded=False
         self.workspace=None
         self.player=None
@@ -105,6 +108,7 @@ class AudioMidiDialog(QDialog):
         self.start_time=None
         self.job_file=None
         self.tempo_job=None
+        self.custom_model_path=None
         self._tempo_taps=[]
         self.create_ui()
         self.load_preferences()
@@ -215,6 +219,9 @@ class AudioMidiDialog(QDialog):
             quant=self.quant.findData(cfg.get("quantize","off"))
             if quant>=0:self.quant.setCurrentIndex(quant)
             self.piano_specialist.setChecked(bool(cfg.get("piano_specialist",True)))
+            from midi_model_options import registered
+            chosen=cfg.get("custom_model_path") or ""
+            self.custom_model_path=str(Path(chosen).resolve()) if chosen and registered(chosen) else None
             self.detect_chords.setChecked(bool(cfg.get("detect_chords",False)))
             self.auto_separate.setChecked(bool(cfg.get("separate_first",False)))
             sep=self.stem_count.findData(str(cfg.get("separation_stems","4")))
@@ -245,6 +252,11 @@ class AudioMidiDialog(QDialog):
             pass
 
     def save_preferences(self):
+        # Los parámetros del proyecto activo se guardan sólo con Guardar;
+        # al pulsar Salir sin guardar no se modifican las preferencias.
+        owner=getattr(getattr(self,"workspace",None),"main",None)
+        if owner is not None and getattr(owner,"project_dir",None) and not getattr(owner,"_explicit_save",False):
+            return
         try:
             data={
                 "use_folder":self.use_folder.isChecked(),
@@ -253,6 +265,7 @@ class AudioMidiDialog(QDialog):
                 "bpm":self.bpm.value(),
                 "quantize":self.quant.currentData(),
                 "piano_specialist":self.piano_specialist.isChecked(),
+                "custom_model_path":self.custom_model_path,
                 "detect_chords":self.detect_chords.isChecked(),
                 "separate_first":self.auto_separate.isChecked(),
                 "separation_stems":self.stem_count.currentData(),
@@ -914,10 +927,43 @@ class AudioMidiDialog(QDialog):
         if self.workspace is None:return []
         from task_staging import project_audio_sources
         from project_flow import approved_map
-        candidates=([Path(path) for path in approved_map(self.workspace.main).values()]
-                    +project_audio_sources(
-                        getattr(self.workspace.main,"project_dir",None),
-                        ("separaciones","bateria","vocal")))
+        main=self.workspace.main
+        project=getattr(main,"project_dir",None)
+        candidates=([Path(path) for path in approved_map(main).values()]
+                    +project_audio_sources(project,("separaciones","bateria","vocal")))
+        # Los stems que acaba de generar la IA siguen siendo utilizables
+        # aunque el usuario todavía no haya pulsado Guardar resultados.
+        # Rechazar siempre archivos ajenos al proyecto activo.
+        if project:
+            from task_staging import inside
+            project=Path(project).resolve()
+            current=(main.workbench.separation_storage.items+
+                     main.workbench.drum_storage.items+
+                     main.workbench.vocal_storage.items)
+            fresh={Path(x).resolve() for x in main.workbench.separator.latest_outputs}
+            # Los seis resultados reales MDX23C se guardan como kick/caja/
+            # toms/etc; no llevan obligatoriamente el sufijo "stems" o
+            # "demucs". Se autentican por almacenamiento y proyecto.
+            from drum_module import category,PARTS
+            drum_parts={Path(x).resolve() for x in main.workbench.drum_storage.items
+                        if category(Path(x)) in PARTS}
+            from vocal_catalog import vocal_role
+            vocal_parts={Path(x).resolve() for x in main.workbench.vocal_storage.items
+                         if vocal_role(Path(x)) is not None}
+            current=list(current)+list(fresh)
+            for file in current:
+                path=Path(file)
+                if (path.is_file() and not path.is_symlink()
+                        and path.suffix.lower() in {".wav",".flac",".mp3",".ogg",
+                                                     ".m4a",".aif",".aiff",".opus"}
+                        and inside(path,project)
+                        and (is_separated_stem(path) or path.resolve() in fresh
+                             or path.resolve() in drum_parts
+                             or path.resolve() in vocal_parts)):
+                    candidates.append(path)
+        if project:
+            from vocal_catalog import project_vocal_files
+            candidates.extend(project_vocal_files(project))
         return sorted({Path(p).resolve() for p in candidates
                        if Path(p).is_file()},key=lambda p:(p.name.casefold(),str(p)))
 
@@ -1049,6 +1095,11 @@ class AudioMidiDialog(QDialog):
         out=self.outdir.text().strip()
         if not out:raise ValueError("Elige una carpeta de destino")
         name=re.sub(r'[^A-Za-z0-9._-]+','_',self.filename.text().strip()) or "Transcripcion"
+        custom=self.custom_model_path
+        if custom:
+            from midi_model_options import registered
+            if not registered(custom):
+                raise ValueError("El modelo MIDI elegido ya no está disponible. Vuelve a seleccionarlo.")
         return {
             "files":files,"folder":folder,"automatic":self.automatic.isChecked(),
             "tempo_auto":self.tempo_auto.isChecked(),"bpm":self.bpm.value(),
@@ -1063,7 +1114,8 @@ class AudioMidiDialog(QDialog):
             "note_shift_ms":self.note_shift.value(),
             "grid_offset_ms":self.grid_offset.value(),
             "auto_grid_alignment":self.align_grid.isChecked(),
-            "piano_specialist":self.piano_specialist.isChecked(),
+            "piano_specialist":self.piano_specialist.isChecked() and not bool(custom),
+            "basic_pitch_model":str(custom) if custom else None,
             "separate_first":(self.auto_separate.isChecked()
                    and not self.use_folder.isChecked()
                    and not is_separated_stem(path)),
@@ -1074,7 +1126,8 @@ class AudioMidiDialog(QDialog):
 
     def set_busy(self,busy):
         self.presets.setEnabled(not busy)
-        self.go.setEnabled(not busy and self.tempo_job is None)
+        self.go.setEnabled(not busy and self.tempo_job is None
+                           and not self._home_queue_busy)
         self.cancel.setEnabled(busy)
         self.use_folder.setEnabled(not busy)
         self.automatic.setEnabled(not busy)
@@ -1092,11 +1145,16 @@ class AudioMidiDialog(QDialog):
         self.folder_button.setEnabled(not busy and self.use_folder.isChecked())
         self.outdir.setEnabled(not busy)
         self.filename.setEnabled(not busy)
-        if busy:self.progress.setRange(0,0)
+        # Porcentaje real: únicamente pistas terminadas notificadas por IA.
+        # Qt(0,0) crea una marquesina inventada y queda prohibido.
+        if busy:
+            self.progress.setRange(0,max(1,self.progress.maximum()))
         else:self.progress.setRange(0,100)
 
-    def start_conversion(self):
-        if self.process is not None and self.process.state()!=QProcess.NotRunning:
+    def start_conversion(self,from_home_queue=False):
+        # Impedir ejecuciones paralelas y también un clic externo durante
+        # una cola abierta por Inicio. Sólo el gestor de cola puede avanzar.
+        if self.process is not None or (self._home_queue_busy and not from_home_queue):
             return
         if not PYTHON.is_file() or not ENGINE.is_file():
             QMessageBox.warning(self,"Motor no disponible","Falta el motor de conversión MIDI.")
@@ -1168,6 +1226,8 @@ class AudioMidiDialog(QDialog):
                 self.log.appendPlainText(line[-700:])
 
     def handle_progress(self,data):
+        # Estado suministrado por el motor, no progreso inventado.
+        self.progressEvent.emit(dict(data))
         status=data.get("stage")
         if status=="start":
             self.stats=[]
@@ -1287,6 +1347,7 @@ class AudioMidiDialog(QDialog):
         proc.finished.connect(self.on_chord_analysis_finished)
         proc.errorOccurred.connect(self.on_process_error)
         self.process=proc
+        self.progressEvent.emit({"stage":"chords","source":str(source)})
         proc.start(str(PYTHON),[str(CHORD_ENGINE),"--audio",str(source),
                    "--midi",str(self.output),"--output",str(target)])
 

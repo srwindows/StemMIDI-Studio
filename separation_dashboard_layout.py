@@ -72,8 +72,8 @@ def install(main):
     entry.heading.setText("01 · ARCHIVO Y CONFIGURACIÓN")
     entry.body.setContentsMargins(10,5,10,7)
     entry.body.setSpacing(5)
-    sep._setup_frame.setMinimumHeight(0)
-    sep._setup_frame.setMaximumHeight(158)
+    sep._setup_frame.setMinimumHeight(139)
+    sep._setup_frame.setMaximumHeight(177)
     sep._setup_frame.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Preferred)
     for control in (sep.file_edit,sep.profile,sep.dest_edit):
         control.setMinimumWidth(0)
@@ -221,7 +221,7 @@ def install(main):
                 listen.channel_mode.setMaximumWidth(110)
                 if preview_label:preview_label.setText("ESCUCHAR ORIGINAL")
             else:
-                entry.setMinimumHeight(0)
+                entry.setMinimumHeight(194)
                 selection.setMinimumHeight(0)
                 tools.setMinimumHeight(92)
                 preview.setMinimumHeight(160)

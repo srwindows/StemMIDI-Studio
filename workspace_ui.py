@@ -245,8 +245,11 @@ class IntegratedWorkspace:
         # main.project_dir ya es la carpeta realmente seleccionada.
         home=getattr(self.main,"studio_home",None)
         if home:
+            # switch_project se ejecuta ANTES de actualizar main.project_dir.
+            # Forzar ahora refresh cargaba el proyecto ANTIGUO para borrarlo
+            # enseguida y relanzaba análisis de audio y consultas MIDI.
+            # El llamador refresca UNA vez cuando el nuevo proyecto esté listo.
             home.reset_project_view()
-            home.refresh(force=True)
         return True
 
     def bind_project(self,project_dir):
@@ -420,7 +423,7 @@ class IntegratedWorkspace:
             self.piano.scene.clear()
             self.piano.tracks_list.clear()
             self.apply_button.setEnabled(False)
-        store.discard()
+        store.discard(parent=self.main)
         if kind=="midi":self.midi_run_folder=None
         result.populate()
 

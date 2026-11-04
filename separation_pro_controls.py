@@ -216,6 +216,11 @@ class MotorDialog(QDialog):
                     "verificable, permanecen en el último valor confirmado.")
         info.setWordWrap(True)
         root.addWidget(info)
+        cancel=QPushButton("■ Cancelar separación")
+        cancel.setObjectName("cancelSeparationMonitor")
+        cancel.clicked.connect(self.sep.stop)
+        root.addWidget(cancel)
+        self.cancel_button=cancel
         close=QPushButton("Ocultar ventana (seguir procesando)")
         close.clicked.connect(self.hide);root.addWidget(close)
         self.refresh_log()
@@ -431,14 +436,70 @@ def pitch_dialog(main):
         codec=["-c:a","flac"]
     operation=QDialog(panel);operation.setWindowTitle("Transposición en curso");operation.resize(460,160)
     op_layout=QVBoxLayout(operation);op_layout.addWidget(QLabel(f"{source.name}\n{shift:+d} semitonos → {dest.name}"))
-    busy=QProgressBar();busy.setRange(0,0);op_layout.addWidget(busy)
+    busy=QProgressBar()
+    busy.setRange(0,100)
+    busy.setValue(0)
+    busy.setFormat("Preparando transposición · 0%")
+    op_layout.addWidget(busy)
+    # FFmpeg proporciona el tiempo de audio efectivamente procesado
+    # mediante -progress. El porcentaje se calcula contra la duración
+    # verificada por ffprobe; ningún temporizador altera la barra.
+    import subprocess
+    duration=0.
+    try:
+        probe=subprocess.run(
+            ["ffprobe","-v","error","-show_entries","format=duration",
+             "-of","default=noprint_wrappers=1:nokey=1",str(source)],
+            capture_output=True,text=True,timeout=12,check=False)
+        if probe.returncode==0:duration=max(0.,float(probe.stdout.strip()))
+    except (OSError,ValueError,subprocess.TimeoutExpired):
+        pass
+    if not duration:
+        busy.setFormat("FFmpeg activo · porcentaje no disponible")
     proc=QProcess(operation)
     proc.setProgram("ffmpeg")
-    proc.setArguments(["-hide_banner","-nostdin","-loglevel","error","-y","-i",str(source),
+    proc.setArguments(["-hide_banner","-nostdin","-progress","pipe:1","-nostats",
+        "-loglevel","error","-y","-i",str(source),
         "-af",f"rubberband=pitch={2**(shift/12):.9f}",*codec,str(dest)])
+    progress_tail=[""]
+    def read_progress():
+        combined=progress_tail[0]+bytes(
+            proc.readAllStandardOutput()).decode("utf-8","replace")
+        lines=combined.split("\n")
+        progress_tail[0]=lines.pop()
+        for line in lines:
+            key,sep,value=line.partition("=")
+            if not sep or key.strip() not in ("out_time_ms","out_time_us"):
+                continue
+            try:
+                elapsed=int(value.strip())/1_000_000
+            except ValueError:
+                continue
+            if duration:
+                percent=min(99,max(0,int(100*elapsed/duration)))
+                busy.setValue(max(percent,busy.value()))
+                busy.setFormat("%p% · tiempo real procesado")
+    proc.readyReadStandardOutput.connect(read_progress)
+    cancelled=[False]
+    cancel_button=QPushButton("■ Cancelar transposición",operation)
+    cancel_button.setObjectName("cancelTransposition")
+    op_layout.addWidget(cancel_button)
+    def cancel_transposition():
+        if cancelled[0]:return
+        cancelled[0]=True
+        cancel_button.setEnabled(False)
+        busy.setFormat("Cancelando…")
+        if proc.state()!=QProcess.NotRunning:proc.kill()
+    cancel_button.clicked.connect(cancel_transposition)
     def completed(code,status):
+        read_progress()
+        ok=(not cancelled[0] and code==0 and
+            status==QProcess.NormalExit and dest.exists() and dest.stat().st_size>0)
+        if ok:
+            busy.setValue(100)
+            busy.setFormat("100% · audio verificado")
         operation.close()
-        if code==0 and status==QProcess.NormalExit and dest.exists() and dest.stat().st_size>0:
+        if ok:
             store.items.append(dest);store.manifest()
             panel.populate()
             for line in panel.lines:line.checked.setChecked(line.path==dest)
@@ -446,8 +507,11 @@ def pitch_dialog(main):
             panel.status.setText("Nueva versión transpuesta creada; seleccionada para guardar o enviar.")
         else:
             dest.unlink(missing_ok=True)
-            QMessageBox.warning(panel,"Error al transponer",
-                                bytes(proc.readAllStandardError()).decode("utf-8","replace")[-900:] or "Falló FFmpeg.")
+            if cancelled[0]:
+                panel.status.setText("Transposición cancelada; fuente original intacta.")
+            else:
+                QMessageBox.warning(panel,"Error al transponer",
+                                    bytes(proc.readAllStandardError()).decode("utf-8","replace")[-900:] or "Falló FFmpeg.")
         proc.deleteLater();operation.deleteLater()
     proc.finished.connect(completed)
     proc.setProcessChannelMode(QProcess.SeparateChannels)

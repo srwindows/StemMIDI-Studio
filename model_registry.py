@@ -104,12 +104,33 @@ def fallback():
                  for name,f,stems,files in entries}
     return records_from_json(data)
 
+_catalog_cache_key=None
+_catalog_cache_records=None
+
 def catalog():
-    records=fallback()
-    data=read_json(CACHE,{})
-    try:records.update(records_from_json(data))
-    except ValueError:pass
-    return records
+    """Cache invalidable por modificación real del catálogo en disco.
+
+    Con miles de modelos revalidar sus nombres en cada repintado era caro
+    y se multiplicaba durante la apertura del proyecto. No cachear para
+    siempre: añadir/actualizar un modelo invalida por stat del JSON.
+    """
+    global _catalog_cache_key,_catalog_cache_records
+    try:
+        stat=CACHE.stat()
+        key=(stat.st_dev,stat.st_ino,stat.st_size,
+             stat.st_mtime_ns,stat.st_ctime_ns)
+    except OSError:key=None
+    if _catalog_cache_records is None or key!=_catalog_cache_key:
+        records=fallback()
+        data=read_json(CACHE,{})
+        try:records.update(records_from_json(data))
+        except ValueError:pass
+        _catalog_cache_key=key
+        _catalog_cache_records=records
+    # Los módulos reciben registros independientes, como antes:
+    # nunca pueden modificar accidentalmente la copia maestra.
+    from copy import deepcopy
+    return deepcopy(_catalog_cache_records)
 
 def record_for(filename):
     return catalog().get(str(filename))

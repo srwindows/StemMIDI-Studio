@@ -10,11 +10,17 @@ with tempfile.TemporaryDirectory(prefix="stem_new_project_config_") as tmp:
  from PySide6.QtWidgets import QApplication,QMessageBox
  from main import MonitorWindow
  from project_flow import create_named_project
+ import project_exit_guard
+ project_exit_guard.ask_exit_choice=lambda _:"discard"
  from studio_shell import save_project,project_payload
  from studio_settings_library import (capture_settings,apply_settings,save_named,load_named,
   delete_named,read_library,settings_dialog,can_apply,LIBRARY_FILE)
  app=QApplication([])
  main=MonitorWindow()
+ # The application installs a confirmation guard on initialization.
+ # Answer only the test project's confirmation, never the real user's.
+ QMessageBox.question=staticmethod(lambda *args,**kwargs:QMessageBox.No)
+ QMessageBox.information=staticmethod(lambda *args,**kwargs:QMessageBox.Ok)
  base=Path(tmp)/"proyectos"
  fmt=main.format.currentText()
  rate=main.capture_rate.currentData()
@@ -23,6 +29,7 @@ with tempfile.TemporaryDirectory(prefix="stem_new_project_config_") as tmp:
  old_manifest=Path(main.project_path)
  old_id=main.project_id
  old_audio=previous/"grabaciones"/"original_protegido.wav"
+ old_audio.parent.mkdir(parents=True,exist_ok=True)
  old_audio.write_bytes(b"NO BORRAR")
  main.last_file=str(old_audio)
  main.workbench.separator.quality.setCurrentText(

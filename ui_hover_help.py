@@ -401,10 +401,11 @@ class ContextHelp(QObject):
         self._app=QApplication.instance()
         self._app.installEventFilter(self)
         self.populate()
-        self.dynamic=QTimer(self)
-        self.dynamic.setInterval(1800)
-        self.dynamic.timeout.connect(self.populate)
-        self.dynamic.start()
+        # Algunos widgets terminan de construirse al finalizar el arranque.
+        # Un segundo barrido ÚNICO los cubre, sin el bloqueo periódico.
+        QTimer.singleShot(0,self.populate)
+        # Los demás se actualizan al mostrarse (QEvent.Show).
+        self.dynamic=None
 
     def _belongs(self,obj):
         if not isinstance(obj,QWidget):return False
@@ -572,17 +573,35 @@ class ContextHelp(QObject):
         self._last=None
         self._hover_shown=False
 
+    def _decorate_new_subtree(self,widget,recursive=True):
+        """Ayuda para controles recién creados, aunque sigan ocultos."""
+        try:
+            if not self._belongs(widget):return
+            targets=(widget,*widget.findChildren(QWidget)) if recursive else (widget,)
+            for target in targets:
+                if not _candidate(target) or isinstance(target,QTabBar):
+                    continue
+                if target.objectName()=="qt_spinbox_lineedit":continue
+                explanation=_describe(target)
+                if explanation:
+                    value=_use_existing(target,explanation)
+                    if _clean(target.toolTip())!=value:
+                        target.setToolTip(value)
+                    target.setToolTipDuration(20000)
+        except RuntimeError:
+            pass
+
     def eventFilter(self,obj,event):
         typ=event.type()
+        # No acceder a event.child() durante QEvent.ChildAdded:
+        # PySide6 aún no ha terminado de construir widgets como QHeaderView.
+        # Envolverlos como QWidget aquí desestabiliza el explorador de archivos.
+        # Cada control se documenta en su evento Show, con tipo ya establecido.
         if typ==QEvent.Show and self._belongs(obj) and _candidate(obj):
-            # Nuevos controles del mezclador/diálogos: ayuda en cuanto
-            # se presentan, sin depender de la siguiente actualización.
+            # Todo control mostrado conserva su descripción profesional.
             if not isinstance(obj,QTabBar):
-                explanation=_describe(obj)
-                if explanation:
-                    value=_use_existing(obj,explanation)
-                    if _clean(obj.toolTip())!=value:
-                        obj.setToolTip(value)
+                # Cambiar de pestaña no debe analizar cientos de hijos.
+                self._decorate_new_subtree(obj,recursive=False)
         if typ==QEvent.ToolTip and self._belongs(obj):
             if not self.enabled:
                 # Desactivado: no mostrar tampoco el tooltip nativo de Qt.

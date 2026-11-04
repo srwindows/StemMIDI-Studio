@@ -49,16 +49,18 @@ with tempfile.TemporaryDirectory(prefix="stemmidi_regresion_") as location:
     assert create_named_project(main,"Validacion QA",str(p/"proyectos"),next(iter(FORMAT_OPTIONS)),SAMPLE_RATES[0])
     project=Path(main.project_dir)
     from project_layout import DIRECTORIES
-    assert {p.name for p in project.iterdir() if p.is_dir()}==set(DIRECTORIES)
+    assert {p.name for p in project.iterdir() if p.is_dir()}=={"temporales"}
     # Compatibilidad con proyectos antiguos que sí tenían carpetas extras;
     # su eliminación no debe realizarse al repetir un proyecto.
     for name in ("grabaciones","temporales","separaciones","midi","bateria","voces","backup"):
         (project/name).mkdir(exist_ok=True)
         (project/name/"sentinela.txt").write_text(name)
     assert repeat_project(main,confirm=False)
-    assert all((project/name/"sentinela.txt").exists() for name in ("separaciones","midi","bateria","voces","backup"))
-    assert all(not (project/name/"sentinela.txt").exists() for name in ("grabaciones","temporales"))
-    print("PASS repetición segura de proyecto")
+    # Repetir nunca borra grabaciones confirmadas ni carpetas anteriores.
+    assert all((project/name/"sentinela.txt").exists()
+               for name in ("grabaciones","separaciones","midi","bateria","voces","backup"))
+    assert not (project/"temporales"/"sentinela.txt").exists()
+    print("PASS repetición sin pérdida de grabaciones ni medios guardados")
     store=main.workbench.midi_storage
     run=store.next_midi_run()
     f=run/"fuente.mid";f.write_bytes(midi_file.read_bytes())

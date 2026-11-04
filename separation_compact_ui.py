@@ -74,8 +74,11 @@ def compact(main):
     entry.body.addWidget(presets,0)
 
     frame=items[3].widget()
-    frame.setMinimumHeight(149)
-    frame.setMaximumHeight(161)
+    # The Qt font metrics require four rows of ~30px plus labels,
+    # inter-row spacing and margins. 149px caused real 2px overlap
+    # between the audio input and separation-profile combo at 1100px.
+    frame.setMinimumHeight(169)
+    frame.setMaximumHeight(177)
     frame.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
     grid=frame.layout()
     setup_items=_take(grid)
@@ -119,7 +122,14 @@ def compact(main):
     for control in (sep.file_edit,sep.profile,sep.dest_edit,
                     sep.quality,sep.export_fmt):
         control.setMinimumWidth(0)
+        control.setStyleSheet("min-height:0px;max-height:26px;")
+        control.setFixedHeight(26)
         control.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Fixed)
+    # Avoid the two-pixel collisions observed at narrow layouts when
+    # Qt gives the panel 28px pitch but styles request 30px controls.
+    for button in (sep.import_button,sep.manage_models_btn,folder_button):
+        button.setStyleSheet("min-height:0px;max-height:26px;")
+        button.setFixedHeight(26)
     grid.setColumnStretch(1,3)
     grid.setColumnStretch(3,2)
     entry.body.addWidget(frame,0)

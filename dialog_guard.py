@@ -26,7 +26,9 @@ def _owner(parent=None):
     m=manager()
     if m is None or not m.windows:
         return None
-    windows=tuple(w for w in m.windows.values() if w is not None and w.isVisible())
+    import shiboken6
+    windows=tuple(w for w in m.windows.values()
+                  if w is not None and shiboken6.isValid(w) and w.isVisible())
     if not windows:return None
     # Primera prioridad: padres contenidos en la tarjeta flotante.
     cur=parent if isinstance(parent,QWidget) else None
@@ -49,6 +51,10 @@ def _owner(parent=None):
     return windows[-1]
 
 def _prepare(dialog,owner=None,modal=False):
+    # Los paneles flotantes son ventanas principales auxiliares, NO diálogos
+    # modales. Nunca anidarlos bajo otro flotante: al cerrar su padre Qt
+    # destruiría los demás paneles y dejaría huecos en la cuadrícula.
+    if dialog.objectName()=="floatingModuleWindow":return False
     if owner is None:owner=_owner(dialog.parentWidget())
     if owner is None or dialog is owner:return False
     if dialog.property("_stem_modal_restacking"):return True
@@ -72,7 +78,10 @@ def _prepare(dialog,owner=None,modal=False):
         dialog.setProperty("_stem_modal_restacking",False)
 
 def _raise_dialog(dlg):
-    if not dlg.isVisible():return
+    # La activación diferida puede ejecutarse después de cerrar un diálogo.
+    # No acceder a objetos Qt ya destruidos ni interrumpir otros candados.
+    import shiboken6
+    if not shiboken6.isValid(dlg) or not dlg.isVisible():return
     dlg.raise_()
     dlg.activateWindow()
 

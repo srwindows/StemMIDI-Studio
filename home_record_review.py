@@ -10,6 +10,19 @@ from PySide6.QtWidgets import (
 )
 from preview_player import PreviewPlayer
 
+def percent_to_gain_db(percent):
+    """85 % es nivel unidad (0 dB); 0 es silencio, 100 es +12 dB."""
+    value=max(0,min(100,int(percent)))
+    return (round(-60+value*60/85) if value<=85
+            else round((value-85)*12/15))
+
+
+def gain_db_to_percent(db):
+    db=max(-60,min(12,int(db)))
+    return (round((db+60)*85/60) if db<=0
+            else round(85+db*15/12))
+
+
 class RecordReview(QFrame):
     def __init__(self,home,parent=None):
         super().__init__(parent)
@@ -59,42 +72,62 @@ class RecordReview(QFrame):
         # El VU del reproductor, ya conectado a PCM real.
         self.vu=self.backend._measured_vu.meter
         self.vu.setParent(self)
-        self.vu.setFixedHeight(63)
+        self.vu.setFixedHeight(51)
         self.vu.setToolTip("Niveles L/R de la toma real, antes de aplicar los tonos de preescucha")
         body.addWidget(self.vu)
         controls=QHBoxLayout()
         self.sliders={}
+        self.value_labels={}
+        current_eq=self.home.main.input_eq_values
         for name,desc,low,high,initial in (
-            ("bass","Graves",-12,12,0),
-            ("mid","Medios",-12,12,0),
-            ("treble","Agudos",-12,12,0),
-            ("volume","Volumen",0,100,85)
+            ("bass","Graves",-12,12,current_eq[0]),
+            ("mid","Medios",-12,12,current_eq[1]),
+            ("treble","Agudos",-12,12,current_eq[2]),
+            ("volume","Volumen",0,100,
+             gain_db_to_percent(self.home.main.input_gain_db))
         ):
             section=QVBoxLayout();section.setSpacing(3)
             head=QHBoxLayout()
             head.addWidget(QLabel(desc,self))
-            value=QLabel((f"{initial:+d} dB" if name!="volume" else f"{initial}%"),self)
-            value.setMinimumWidth(44)
+            value=QLabel((f"{initial:+d} dB" if name!="volume" else
+                f"{initial}% · {percent_to_gain_db(initial):+d}dB"),self)
+            self.value_labels[name]=value
+            value.setMinimumWidth(80 if name=="volume" else 44)
+            if name=="volume":
+                self.volume_value_label=value
             head.addWidget(value)
             section.addLayout(head)
             slider=QSlider(Qt.Horizontal,self)
             slider.setFixedHeight(22)
             slider.setRange(low,high)
             slider.setValue(initial)
-            slider.setToolTip(desc+" durante la reproducción (no modifica el archivo)")
+            slider.setToolTip(
+                ("Nivel REAL de grabación: 85%=0 dB, 100%=+12 dB, 0%=silencio. "
+                 "También controla el volumen de escucha." if name=="volume" else
+                 "EQ REAL de grabación y de preescucha de la última toma. "
+                 "Afecta al audio que se guarda, sin modificar tomas anteriores."))
             slider.valueChanged.connect(lambda n,k=name,v=value:
-                v.setText(f"{n:+d} dB" if k!="volume" else f"{n}%"))
+                v.setText(f"{n:+d} dB" if k!="volume" else
+                          f"{n}% · {percent_to_gain_db(n):+d}dB"))
             if name=="volume":
-                slider.valueChanged.connect(self.backend.volume.setValue)
+                slider.valueChanged.connect(self._gain_changed)
             else:
+                slider.valueChanged.connect(self.apply_eq)
                 slider.sliderReleased.connect(self.apply_eq)
             section.addWidget(slider)
+            if name=="volume":
+                # El dial REAL de balance se traslada aquí cuando el
+                # candado está abierto; no se crea un dial desconectado.
+                self.balance_mount=QVBoxLayout()
+                self.balance_mount.setSpacing(0)
+                section.addLayout(self.balance_mount)
             controls.addLayout(section,1)
+            controls.setAlignment(section,Qt.AlignTop)
             self.sliders[name]=slider
         body.addLayout(controls)
         bottom=QHBoxLayout()
-        self.eq_enabled=QCheckBox("EQ activo",self)
-        self.eq_enabled.setChecked(True)
+        self.eq_enabled=QCheckBox("EQ activo en grabación",self)
+        self.eq_enabled.setChecked(self.home.main.input_eq_enabled)
         self.eq_enabled.toggled.connect(self.apply_eq)
         bottom.addWidget(self.eq_enabled)
         self.reset=QPushButton("Tonos planos",self)
@@ -107,9 +140,12 @@ class RecordReview(QFrame):
         self.channel_mode.currentIndexChanged.connect(self.change_channels)
         self.backend.channel_mode=self.channel_mode
         bottom.addWidget(self.channel_mode)
-        self.state=QLabel("No se modifica el original",self)
-        bottom.addWidget(self.state,1)
+        bottom.addStretch(1)
         body.addLayout(bottom)
+        self.state=QLabel("Sin toma reciente · captura EQ y volumen operativos",self)
+        self.state.setWordWrap(True)
+        self.state.setMaximumHeight(34)
+        body.addWidget(self.state)
         self.ticker=QTimer(self)
         self.ticker.setInterval(240)
         self.ticker.timeout.connect(self.refresh)
@@ -146,11 +182,48 @@ class RecordReview(QFrame):
         self.state.setText("Escuchando la última toma" if playing else
                            "Archivo original sin modificar")
 
+    def _gain_changed(self,value):
+        """Un ÚNICO nivel de grabación; espejo inferior de Inicio."""
+        self.backend.volume.setValue(value)
+        self.home.main.set_input_processing(gain_db=percent_to_gain_db(value))
+
+    def sync_capture_gain(self,gain_db):
+        """Un ajuste desde Inicio se refleja en el control de arriba."""
+        target=gain_db_to_percent(gain_db)
+        if self.sliders["volume"].value()!=target:
+            from PySide6.QtCore import QSignalBlocker
+            with QSignalBlocker(self.sliders["volume"]):
+                self.sliders["volume"].setValue(target)
+            self.backend.volume.setValue(target)
+        if hasattr(self,"volume_value_label"):
+            self.volume_value_label.setText(
+                f"{target}% · {gain_db:+d}dB")
+
+    def sync_capture_eq(self,enabled,values):
+        """Restaurar el EQ de un proyecto sin señales recursivas."""
+        from PySide6.QtCore import QSignalBlocker
+        if self.eq_enabled.isChecked()!=bool(enabled):
+            with QSignalBlocker(self.eq_enabled):
+                self.eq_enabled.setChecked(bool(enabled))
+        for key,value in zip(("bass","mid","treble"),values):
+            slider=self.sliders[key]
+            if slider.value()!=value:
+                with QSignalBlocker(slider):slider.setValue(value)
+                self.value_labels[key].setText(f"{value:+d} dB")
+        self.backend.set_preview_eq(*(values if enabled else (0,0,0)))
+
     def apply_eq(self,*_):
-        if self.eq_enabled.isChecked():
-            self.backend.set_preview_eq(*(self.sliders[k].value()
-                                          for k in ("bass","mid","treble")))
-        else:self.backend.set_preview_eq(0,0,0)
+        values=tuple(self.sliders[k].value()
+                     for k in ("bass","mid","treble"))
+        enabled=self.eq_enabled.isChecked()
+        self.home.main.set_input_eq(enabled,*values)
+        # Mientras se arrastra un slider, la captura ya se actualiza en
+        # caliente. FFplay se reinicia SOLO al soltar, para evitar cortes
+        # de la escucha en cada píxel de movimiento del ratón.
+        if not any(self.sliders[k].isSliderDown()
+                   for k in ("bass","mid","treble")):
+            self.backend.set_preview_eq(*(values if enabled else (0,0,0)))
+        self.home.update_capture_diagnostics()
 
     def change_channels(self,*_):
         # FFplay necesita reabrir la señal para cambiar la mezcla de canales.
@@ -160,8 +233,11 @@ class RecordReview(QFrame):
             self.backend._start_audio(position)
 
     def flat_eq(self):
+        from PySide6.QtCore import QSignalBlocker
         for key in ("bass","mid","treble"):
-            self.sliders[key].setValue(0)
+            with QSignalBlocker(self.sliders[key]):
+                self.sliders[key].setValue(0)
+            self.value_labels[key].setText("+0 dB")
         self.apply_eq()
 
     def stop_playback(self):

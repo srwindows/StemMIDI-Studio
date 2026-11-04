@@ -34,7 +34,7 @@ for index,card in enumerate(manager.cards):
  assert floating.grab().save(f"/tmp/stem_neon_flotante_{index:02d}.png")
  card.lock_button.click()
  for _ in range(12):app.processEvents()
-browser=StemFileBrowser(win,"Abrir proyecto","/media/javi/Recuperacion",
+browser=StemFileBrowser(win,"Abrir proyecto",str(Path.home()),
                        "Proyecto StemMIDI (*.stemstudio.json *.json)","open")
 browser.show()
 for _ in range(42):app.processEvents()

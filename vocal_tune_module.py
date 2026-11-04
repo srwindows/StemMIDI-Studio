@@ -261,7 +261,8 @@ class VocalTuneModule(QWidget):
         # Banco de presets DEL MÓDULO COMPLETO, visible en todas las pestañas,
         # incluida Voz de referencia. Nunca guarda rutas ni audio.
         self._applying_full_preset=False
-        self.full_presets=PresetStrip("vocal_completo",{
+        from vocal_preset_catalog import merged_vocal_presets
+        self.full_presets=PresetStrip("vocal_completo",merged_vocal_presets({
             "Voz natural sin efectos":{
                 "character":"Natural","character_amount":0,"warmth":0,"presence":0,
                 "air":0,"deesser":0,"gate":0,"reverb":0,"wet":100,
@@ -282,7 +283,8 @@ class VocalTuneModule(QWidget):
                 "presence":50,"air":20,"deesser":32,"gate":20,"reverb":8,
                 "wet":100,"doubler":23,"delay":11,"delay_ms":125,
                 "compression":55,"highpass":90,"bypass_tune":False}
-        },self.full_preset_snapshot,self.apply_full_preset,self)
+        },self.full_preset_snapshot()),self.full_preset_snapshot,
+            self.apply_full_preset,self)
         self.full_presets.setToolTip(
             "Guarda y recupera la configuración completa de voz y efectos; "
             "la grabación original y sus rutas no forman parte del preset.")
@@ -694,6 +696,12 @@ class VocalTuneModule(QWidget):
         proc.finished.connect(self._finished)
         proc.errorOccurred.connect(self._error)
         self.process=proc
+        self._cancel_requested=False
+        from engine_task_indicator import EngineTaskIndicator
+        self._engine_indicator=EngineTaskIndicator(self,
+            "Análisis / procesamiento de voz",phases=1)
+        self._engine_indicator.set_cancel_callback(self.cancel)
+        self._engine_indicator.attach(proc,self.status.text())
         self._set_busy(True)
         proc.start(str(executable),[str(ROOT/"vocal_tune_engine.py"),
                    "--input",str(file),"--analyze"])
@@ -746,6 +754,12 @@ class VocalTuneModule(QWidget):
         proc.finished.connect(self._finished)
         proc.errorOccurred.connect(self._error)
         self.process=proc
+        self._cancel_requested=False
+        from engine_task_indicator import EngineTaskIndicator
+        self._engine_indicator=EngineTaskIndicator(self,
+            "Análisis / procesamiento de voz",phases=1)
+        self._engine_indicator.set_cancel_callback(self.cancel)
+        self._engine_indicator.attach(proc,self.status.text())
         self._set_busy(True)
         proc.start(str(python),[str(ROOT/"vocal_tune_engine.py"),
             "--input",str(source),"--output",str(target),
@@ -820,6 +834,12 @@ class VocalTuneModule(QWidget):
         proc.finished.connect(self._finished)
         proc.errorOccurred.connect(self._error)
         self.process=proc
+        self._cancel_requested=False
+        from engine_task_indicator import EngineTaskIndicator
+        self._engine_indicator=EngineTaskIndicator(self,
+            "Análisis / procesamiento de voz",phases=1)
+        self._engine_indicator.set_cancel_callback(self.cancel)
+        self._engine_indicator.attach(proc,self.status.text())
         self._set_busy(True)
         proc.start(str(python),[
             str(ROOT/"vocal_interpretation_engine.py"),
@@ -854,7 +874,9 @@ class VocalTuneModule(QWidget):
         output=self.processing_file
         self.processing_file=None
         if self._operation in ("analyse","reference"):
-            if code!=0 or exit_status!=QProcess.NormalExit:
+            if self._cancel_requested:
+                self.status.setText("Análisis vocal cancelado; sin cambios en el proyecto.")
+            elif code!=0 or exit_status!=QProcess.NormalExit:
                 self.status.setText("No se pudo analizar. Necesitamos una voz solista.")
             else:
                 import json
@@ -886,15 +908,24 @@ class VocalTuneModule(QWidget):
                     self.status.setText("Análisis completado.")
                 except (ValueError,KeyError,TypeError,StopIteration):
                     self.status.setText("El motor no ha devuelto un informe válido.")
+            if getattr(self,"_engine_indicator",None) is not None:
+                ok=(code==0 and exit_status==QProcess.NormalExit
+                    and self.status.text()=="Análisis completado.")
+                self._engine_indicator.finish(ok,self.status.text())
+                self._engine_indicator=None
             self._operation=None
             proc.deleteLater()
             return
-        if code!=0 or exit_status!=QProcess.NormalExit or not output or not output.is_file():
+        if (self._cancel_requested or code!=0 or
+            exit_status!=QProcess.NormalExit or not output or not output.is_file()):
             from task_staging import inside
             if output and output.is_file() and inside(output,self.storage.root):
                 output.unlink(missing_ok=True)  # Solo el render incompleto.
-            self.status.setText("El procesamiento vocal no se completó. "
-                                "Comprueba el registro y los parámetros.")
+            self.status.setText(
+                "Procesamiento vocal cancelado; resultado parcial descartado."
+                if self._cancel_requested else
+                "El procesamiento vocal no se completó. "
+                "Comprueba el registro y los parámetros.")
         else:
             try:
                 self.storage.set_separation(output.parent)
@@ -927,11 +958,19 @@ class VocalTuneModule(QWidget):
                 self.resultsChanged.emit()
             except (ValueError,OSError) as exc:
                 self.status.setText("No se ha podido validar la salida: "+str(exc))
+        if getattr(self,"_engine_indicator",None) is not None:
+            success=(code==0 and exit_status==QProcess.NormalExit
+                     and output is not None and output.is_file()
+                     and Path(output) in self.storage.items)
+            self._engine_indicator.finish(success,self.status.text())
+            self._engine_indicator=None
         proc.deleteLater()
 
     def cancel(self):
         if self.process is not None:
-            self.process.kill()
+            self._cancel_requested=True
+            if self.process.state()!=QProcess.NotRunning:
+                self.process.kill()
             self.status.setText("Cancelando análisis…")
 
     def refresh_results(self):
@@ -983,7 +1022,7 @@ class VocalTuneModule(QWidget):
             QMessageBox.Yes|QMessageBox.No,QMessageBox.No)
         if ans!=QMessageBox.Yes:return
         self.preview.clear()
-        self.storage.discard()
+        self.storage.discard(parent=self)
         self.refresh_results()
         self.resultsChanged.emit()
         self.status.setText("Afinación temporal descartada.")
