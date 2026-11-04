@@ -16,7 +16,12 @@ import shutil
 
 def available_sinks():
     if sys.platform != "linux":
-        return []
+        from native_listen import audio_outputs
+        try:
+            return [("Salida: "+name,"portaudio:"+str(index))
+                    for index,name in audio_outputs()]
+        except Exception:
+            return []
     try:
         result=subprocess.run(
             ["pactl","-f","json","list","sinks"],capture_output=True,
@@ -39,7 +44,10 @@ def available_sinks():
 
 
 def default_sink():
-    if sys.platform!="linux":return ""
+    if sys.platform!="linux":
+        from native_listen import default_audio_output
+        try:return default_audio_output()
+        except Exception:return ""
     try:
         return subprocess.run(
             ["pactl","get-default-sink"],capture_output=True,text=True,
@@ -50,8 +58,30 @@ def default_sink():
 
 def is_feedback_route(source,sink):
     """No reproducir en el propio sink cuando la fuente es su monitor."""
-    return (bool(source and sink) and str(source).endswith(".monitor") and
-            str(source)[:-len(".monitor")]==str(sink))
+    if not source or not sink:
+        return False
+    source,sink=str(source),str(sink)
+    if source.endswith(".monitor") and source[:-len(".monitor")]==sink:
+        return True
+    # Un loopback virtual no se debe reproducir hacia sí mismo.
+    if source.startswith("soundcard:") and sink.startswith("portaudio:"):
+        try:
+            import soundcard as sc
+            import sounddevice as sd
+            selected=next((m for m in sc.all_microphones(include_loopback=True)
+                           if str(m.id)==source.split(":",1)[1]),None)
+            if selected is not None:
+                output=sd.query_devices(int(sink.split(":",1)[1]))
+                name=str(selected.name).strip().casefold()
+                out=str(output["name"]).strip().casefold()
+                if name==out and (
+                    bool(getattr(selected,"isloopback",False)) or
+                    any(part in name for part in
+                        ("blackhole","soundflower","loopback","vb-cable"))):
+                    return True
+        except (OSError,ValueError,LookupError):
+            pass
+    return False
 
 
 class LiveProcessedListen:
@@ -61,12 +91,19 @@ class LiveProcessedListen:
         self.sample_rate=int(sample_rate)
         self.sink=""
         self.process=None
+        self._native=None
         self.pending=b""
         self._status="Desactivada"
 
     @property
     def status(self):
         return self._status
+
+    @property
+    def active(self):
+        if self._native is not None:
+            return self._native.active
+        return self.process is not None and self.process.poll() is None
 
     def start(self,sink):
         sink=str(sink or "")
@@ -76,7 +113,16 @@ class LiveProcessedListen:
             raise ValueError(
                 "Esta salida es el mismo dispositivo que estás capturando. "
                 "Elige otra salida para evitar realimentación")
-        if sys.platform!="linux" or not shutil.which("pacat"):
+        if sys.platform!="linux":
+            from native_listen import NativeListen
+            self.stop()
+            native=NativeListen(sink,self.sample_rate)
+            native.start()
+            self._native=native
+            self.sink=sink
+            self._status="Escucha procesada en "+sink
+            return
+        if not shutil.which("pacat"):
             raise RuntimeError("La escucha procesada requiere pacat/PipeWire en Linux")
         self.stop()
         args=["pacat","--playback","--raw","--device="+sink,
@@ -97,6 +143,13 @@ class LiveProcessedListen:
         self.pending=b""
 
     def feed(self,pcm):
+        if self._native is not None:
+            if not self._native.active:
+                self.stop()
+                self._status="Error: salida de escucha desconectada"
+                return
+            self._native.feed(pcm)
+            return
         process=self.process
         if process is None:
             return
@@ -121,6 +174,10 @@ class LiveProcessedListen:
             self._status="Salida lenta o bloqueada: escucha detenida"
 
     def stop(self):
+        native=self._native
+        self._native=None
+        if native is not None:
+            native.stop()
         p=self.process
         self.process=None
         self.pending=b""
