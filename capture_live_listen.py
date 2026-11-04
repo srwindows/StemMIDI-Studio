@@ -68,8 +68,15 @@ def is_feedback_route(source,sink):
         try:
             import soundcard as sc
             import sounddevice as sd
-            selected=next((m for m in sc.all_microphones(include_loopback=True)
-                           if str(m.id)==source.split(":",1)[1]),None)
+            ident=source.split(":",1)[1]
+            if ident.startswith("name:"):
+                from urllib.parse import unquote
+                name=unquote(ident.removeprefix("name:"))
+                selected=next((m for m in sc.all_microphones(include_loopback=True)
+                               if str(m.name)==name),None)
+            else:
+                selected=next((m for m in sc.all_microphones(include_loopback=True)
+                               if str(m.id)==ident),None)
             if selected is not None:
                 output=sd.query_devices(int(sink.split(":",1)[1]))
                 name=str(selected.name).strip().casefold()
