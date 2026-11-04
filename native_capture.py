@@ -37,7 +37,8 @@ def default_source():
 def record_chunks(device,stop_event,rate=48000,frames=4096):
     sc=_audio()
     ident=str(device).removeprefix("soundcard:")
-    microphone=sc.get_microphone(ident,include_loopback=True)
+    microphone=next((mic for mic in sc.all_microphones(include_loopback=True)
+                     if str(mic.id)==ident),None)
     if microphone is None:
         raise RuntimeError("Dispositivo de audio no disponible: "+ident)
     try:
