@@ -42,7 +42,9 @@ def record_chunks(device,stop_event,rate=48000,frames=4096):
     if microphone is None:
         raise RuntimeError("Dispositivo de audio no disponible: "+ident)
     try:
-        context=microphone.recorder(samplerate=rate,channels=2)
+        input_channels=int(getattr(microphone,"channels",2) or 2)
+        context=microphone.recorder(samplerate=rate,
+                                    channels=1 if input_channels==1 else 2)
         with context as rec:
             while not stop_event.is_set():
                 data=np.asarray(rec.record(numframes=frames),dtype=np.float32)
