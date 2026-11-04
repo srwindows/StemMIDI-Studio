@@ -533,7 +533,14 @@ class MonitorWindow(QMainWindow):
             idx = self.sources.findData(default_monitor())
         if idx >= 0:
             self.sources.setCurrentIndex(idx)
-        self.statusline.setText(f"{len(sources)} fuentes disponibles. Selecciona la salida que está sonando.")
+        if sys.platform=="darwin":
+            message=(f"{len(sources)} entradas CoreAudio disponibles. "
+                     "Selecciona el dispositivo que recibe audio; para "
+                     "sonido interno del Mac se necesita un loopback virtual.")
+        else:
+            message=(f"{len(sources)} fuentes disponibles. "
+                     "Selecciona la salida que está sonando.")
+        self.statusline.setText(message)
 
     def set_input_processing(self, gain_db=None, balance=None):
         """Actualiza captura y medidores; no ajusta el volumen de PipeWire."""
