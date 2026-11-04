@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections import deque
 import threading
+import sys
 import numpy as np
 
 
@@ -38,6 +39,7 @@ class NativeListen:
         self._rest = b""
         self._size = 0
         self._stream = None
+        self._output_channels = 2
         self._last_error = ""
         self._max_buffer = self.sample_rate * 2 * 4 // 3
 
@@ -56,10 +58,20 @@ class NativeListen:
         import sounddevice as sd
         # Sin señal hasta recibir un bloque del motor. Volumen neutro;
         # la ganancia y la EQ ya se aplicaron antes de feed().
+        info = sd.query_devices(self.device)
+        # Roland FANTOM-0 / Sonoma 14: el driver 1.0.1 bloquea la salida
+        # 2ch/48 kHz, pero funciona en 4ch/48 kHz y 2ch/96 kHz.
+        # Abrir los cuatro canales y enviar señal solo a L/R evita el bloqueo.
+        if (sys.platform == "darwin" and self.sample_rate == 48000
+                and int(info.get("max_output_channels", 0)) >= 4
+                and "fantom-06 07 08" in str(info.get("name", "")).casefold()):
+            self._output_channels = 4
+        else:
+            self._output_channels = 2
         stream = sd.OutputStream(
             device=self.device, samplerate=self.sample_rate,
-            channels=2, dtype="float32", latency="low", blocksize=0,
-            callback=self._callback)
+            channels=self._output_channels, dtype="float32", latency="low",
+            blocksize=0, callback=self._callback)
         try:
             stream.start()
         except Exception:
@@ -84,7 +96,6 @@ class NativeListen:
 
     def _callback(self, outdata, frames, time_info, status):
         outdata.fill(0)
-        samples = outdata.reshape(-1)
         needed = int(frames) * 8
         chunks = []
         with self._lock:
@@ -104,7 +115,7 @@ class NativeListen:
         if chunks:
             pcm = b"".join(chunks)
             data = np.frombuffer(pcm, dtype="<f4")
-            samples[:len(data)] = data
+            outdata[:len(data)//2, :2] = data.reshape(-1,2)
 
     def stop(self):
         stream = self._stream
