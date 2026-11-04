@@ -1,13 +1,13 @@
 # StemMIDI Studio
 
-**Version 1.1.0-beta.1 — Debian 13 — codigo fuente de prueba**
+**Version 1.1.0 — Debian 13 — distribucion del codigo fuente**
 
 Estudio modular de grabacion y produccion de audio y MIDI. Incluye Monitor,
 grabacion, separacion de stems con modelos opcionales, audio a MIDI, bateria,
 Mezclador, Resultados, Piano Roll, Compositor multipista, afinacion vocal y
 conversion MIDI a audio con bancos SoundFont.
 
-## Que incluye esta beta
+## Que incluye esta version
 
 - Inicio con 12 tarjetas en tres filas de cuatro, intercambio de posiciones,
   ventanas flotantes y controles sincronizados con las pestanas profesionales.
@@ -31,7 +31,7 @@ de audio compatibles. Algunos modulos requieren SoundFonts o modelos
 opcionales adicionales.
 
 **Windows y macOS no se presentan como sistemas validados.**
-La beta se comprobo en Debian 13 con tests automatizados y validacion de
+Esta version se comprobo en Debian 13 con tests automatizados y validacion de
 ventanas. La latencia y escucha final en hardware fisico deben verificarse
 en cada instalacion.
 
@@ -76,5 +76,5 @@ que no forman parte de esta distribucion.
 - Los resultados de generacion musical necesitan revision antes de publicarse
   para no reproducir obras ajenas reconocibles.
 
-Este repositorio ofrece la **beta de codigo fuente**. No incluye actualmente
+Este repositorio distribuye el **codigo fuente de la version 1.1.0**. No incluye actualmente
 una compilacion Windows .exe ni un instalador macOS .dmg verificados.

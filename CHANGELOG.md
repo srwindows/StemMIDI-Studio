@@ -1,6 +1,6 @@
 # Historial de StemMIDI Studio
 
-## 1.1.0-beta.1 — 2026-11-04
+## 1.1.0 — 2026-11-04
 
 - Publicacion del estado actual de los modulos de StemMIDI Studio.
 - Inicio 3×4 con intercambios exactos entre dos tarjetas.
@@ -14,7 +14,7 @@
   canciones MIDI/KAR ni bases ritmicas originales.
 - Documentacion, permisos, configuracion Git y pruebas publicas.
 
-**Beta:** siguen pendientes verificaciones exhaustivas de escucha real sobre
+**Limitaciones verificables:** siguen pendientes verificaciones exhaustivas de escucha real sobre
 hardware fisico y builds nativas Windows y macOS.
 
 ## 1.0 — 2026-10-27

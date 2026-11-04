@@ -1,6 +1,6 @@
 # Instalar StemMIDI Studio en Debian 13
 
-Es una beta de codigo fuente. Se recomienda instalarla en un entorno
+Se distribuye el codigo fuente de la version 1.1.0. Se recomienda instalarla en un entorno
 Python virtual con PipeWire/PulseAudio activos.
 
 Instala las dependencias del sistema (terminal):
