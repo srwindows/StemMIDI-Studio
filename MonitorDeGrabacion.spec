@@ -3,7 +3,7 @@ from pathlib import Path
 import os
 ROOT=Path(SPECPATH).resolve()
 INTRO_VIDEO=ROOT/'intro'/'StemMIDI_Intro_Definitiva.mp4'
-if os.environ.get('STEMMIDI_REQUIRE_INTRO') == '1' and not INTRO_VIDEO.is_file():
+if not INTRO_VIDEO.is_file():
     raise SystemExit('No se puede crear la distribucion: falta la intro aprobada StemMIDI_Intro_Definitiva.mp4')
 a = Analysis(
     [str(ROOT/'main.py')],
@@ -11,7 +11,7 @@ a = Analysis(
     binaries=[],
     datas=[
         (str(ROOT/'assets'),'assets'),
-        *([(str(INTRO_VIDEO),'intro')] if INTRO_VIDEO.is_file() else []),
+        (str(INTRO_VIDEO),'intro'),
         (str(ROOT/'composition_learned_model.json'),'.'),
         (str(ROOT/'modelos_publicos/multinstrumental_markov_v1.json'),
          'modelos_publicos'),
