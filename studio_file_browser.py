@@ -396,17 +396,50 @@ class StemFileBrowser(QDialog):
         QShortcut(QKeySequence("F5"),self).activated.connect(self.refresh_folder)
 
     def _add_shortcuts(self):
-        links=[
-            ("⌂  Carpeta personal",Path.home()),
-            ("▣  Escritorio",Path.home()/"Escritorio"),
-            ("▤  Documentos",Path.home()/"Documentos"),
-            ("↓  Descargas",Path.home()/"Descargas"),
-            ("♫  Música",Path.home()/"Música"),
-            ("▸  Vídeos",Path.home()/"Vídeos"),
-            ("◧  Archivos personales",Path.home()),
-            ("▣  Dispositivos",Path("/media")),
-            ("⚙  Sistema de archivos",Path("/")),
-        ]
+        """Accesos reales del sistema, incluidos todos los volúmenes macOS."""
+        import sys
+        self.shortcuts.clear()
+        home=Path.home()
+        if sys.platform=="darwin":
+            # macOS mantiene estos nombres de carpeta en disco aunque Finder
+            # los presente traducidos como Escritorio, Descargas, etc.
+            # Las unidades deben estar arriba, visibles sin recorrer todos
+            # los accesos personales con el scroll lateral.
+            links=[("⌂  Carpeta personal",home)]
+            volumes=Path("/Volumes")
+            if volumes.is_dir():
+                links.append(("▣  Discos y unidades",volumes))
+                try:
+                    mounted=sorted((p for p in volumes.iterdir() if p.is_dir()),
+                                   key=lambda p:p.name.casefold())
+                except OSError:
+                    mounted=[]
+                for disk in mounted:
+                    links.append(("◉  "+disk.name,disk))
+            links.extend([
+                ("▣  Escritorio",home/"Desktop"),
+                ("▤  Documentos",home/"Documents"),
+                ("↓  Descargas",home/"Downloads"),
+                ("♫  Música",home/"Music"),
+                ("▸  Vídeos",home/"Movies"),
+                ("▧  Imágenes",home/"Pictures"),
+                ("◧  Aplicaciones",Path("/Applications")),
+                ("⚙  Sistema de archivos",Path("/")),
+            ])
+        else:
+            links=[
+                ("⌂  Carpeta personal",home),
+                ("▣  Escritorio",home/"Escritorio"),
+                ("▤  Documentos",home/"Documentos"),
+                ("↓  Descargas",home/"Descargas"),
+                ("♫  Música",home/"Música"),
+                ("▸  Vídeos",home/"Vídeos"),
+                ("◧  Archivos personales",home),
+                ("▣  Dispositivos",Path("/media")),
+                ("⚙  Sistema de archivos",Path("/")),
+            ]
+            if Path("/run/media").is_dir():
+                links.append(("▣  Discos montados",Path("/run/media")))
         used=set()
         for label,p in links:
             if p.is_dir() and str(p) not in used:
@@ -415,10 +448,6 @@ class StemFileBrowser(QDialog):
                 item.setToolTip(str(p))
                 self.shortcuts.addItem(item)
                 used.add(str(p))
-        if Path("/run/media").is_dir():
-            item=QListWidgetItem("Discos montados")
-            item.setData(Qt.UserRole,"/run/media")
-            self.shortcuts.addItem(item)
 
     def _search(self,value):
         self._proxy.query=value.casefold().strip()
@@ -525,6 +554,8 @@ class StemFileBrowser(QDialog):
         if parent!=self._dir():self.go_to(parent)
 
     def refresh_folder(self):
+        # Reconocer también unidades conectadas mientras el explorador está abierto.
+        self._add_shortcuts()
         current=self._dir()
         self.go_to(current,False)
 
