@@ -9,6 +9,7 @@ bloqueo modal invisible observado en KDE.
 from __future__ import annotations
 
 import weakref
+import sys
 from PySide6.QtCore import Qt, QEvent, QObject, QTimer
 from PySide6.QtWidgets import (
     QApplication,QDialog,QMessageBox,QInputDialog,QFileDialog,QLineEdit,QWidget
@@ -51,6 +52,11 @@ def _owner(parent=None):
     return windows[-1]
 
 def _prepare(dialog,owner=None,modal=False):
+    # Cocoa gestiona la jerarquía de diálogos. Reasignarlos a Qt.Tool y
+    # WindowStaysOnTopHint en macOS provoca modales que no reciben el foco.
+    # Conservar el padre y los indicadores originales en ese sistema.
+    if sys.platform == "darwin":
+        return False
     # Los paneles flotantes son ventanas principales auxiliares, NO diálogos
     # modales. Nunca anidarlos bajo otro flotante: al cerrar su padre Qt
     # destruiría los demás paneles y dejaría huecos en la cuadrícula.
