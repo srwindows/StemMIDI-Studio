@@ -7,6 +7,14 @@ dispositivo virtual configurado por el usuario, p. ej. BlackHole.
 from __future__ import annotations
 import sys
 import numpy as np
+from urllib.parse import quote, unquote
+
+def _stable_id(mic):
+    # AudioObjectID de macOS cambia al reiniciar coreaudiod.
+    # Usar un identificador persistente para no perder las fuentes guardadas.
+    if sys.platform=="darwin":
+        return "soundcard:name:"+quote(str(mic.name),safe="")
+    return "soundcard:"+str(mic.id)
 
 def _audio():
     import soundcard
@@ -22,7 +30,7 @@ def get_sources(include_mics=False):
             continue
         label=("Salida (WASAPI): " if loop else "Entrada (CoreAudio): " 
                if sys.platform=="darwin" else "Micrófono: ")+str(mic.name)
-        result.append({"name":"soundcard:"+str(mic.id),
+        result.append({"name":_stable_id(mic),
                        "label":label,"kind":"monitor" if loop else "input"})
     return result
 
@@ -30,19 +38,25 @@ def default_source():
     sc=_audio()
     for mic in sc.all_microphones(include_loopback=True):
         if getattr(mic,"isloopback",False):
-            return "soundcard:"+str(mic.id)
+            return _stable_id(mic)
     microphones=sc.all_microphones(include_loopback=True)
-    return "soundcard:"+str(microphones[0].id) if microphones else None
+    return _stable_id(microphones[0]) if microphones else None
 
 def record_chunks(device,stop_event,rate=48000,frames=4096):
     sc=_audio()
     ident=str(device).removeprefix("soundcard:")
-    microphone=next((mic for mic in sc.all_microphones(include_loopback=True)
-                     if str(mic.id)==ident),None)
+    microphones=sc.all_microphones(include_loopback=True)
+    if ident.startswith("name:"):
+        name=unquote(ident.removeprefix("name:"))
+        microphone=next((mic for mic in microphones if str(mic.name)==name),None)
+    else:
+        microphone=next((mic for mic in microphones if str(mic.id)==ident),None)
     if microphone is None:
         raise RuntimeError("Dispositivo de audio no disponible: "+ident)
     try:
-        context=microphone.recorder(samplerate=rate,channels=2)
+        input_channels=int(getattr(microphone,"channels",2) or 2)
+        context=microphone.recorder(samplerate=rate,
+                                    channels=1 if input_channels==1 else 2)
         with context as rec:
             while not stop_event.is_set():
                 data=np.asarray(rec.record(numframes=frames),dtype=np.float32)

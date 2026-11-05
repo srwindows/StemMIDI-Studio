@@ -6,7 +6,7 @@ from __future__ import annotations
 import json,os,re,shutil,unicodedata
 from uuid import uuid4
 from pathlib import Path
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
  QDialog,QVBoxLayout,QHBoxLayout,QLabel,QPushButton,QMessageBox,QFileDialog,
  QWidget,QFormLayout,QLineEdit,QComboBox,QInputDialog
@@ -562,13 +562,11 @@ def startup(main):
     def choose_blank():
         state["choice"]="blank";box.accept()
     def choose_open():
-        from file_dialogs import get_open_file_name
-        source,_=get_open_file_name(box,"Abrir proyecto StemMIDI",
-                str(PROJECTS if PROJECTS.exists() else ROOT),
-                "Proyecto StemMIDI (*.stemstudio.json *.json)")
-        if source:
-            state["choice"]=source
-            box.accept()
+        # Cerrar primero el selector. En macOS, abrir otro QDialog.exec()
+        # dentro del modal inicial crea dos sesiones Cocoa anidadas y puede
+        # dejar el explorador detrás de la ventana que bloquea el foco.
+        state["choice"]="open_existing"
+        box.accept()
     a.clicked.connect(choose_blank)
     b.clicked.connect(choose_open)
     cancel.clicked.connect(box.reject)
@@ -579,9 +577,17 @@ def startup(main):
         if not new_project_dialog(main):
             # Volver al selector inicial, evitando registrar una sesión
             # sin nombre cuando se cancela la creación.
-            QTimer=__import__("PySide6.QtCore",fromlist=["QTimer"]).QTimer
             QTimer.singleShot(0,lambda:startup(main))
             return
-    elif state["choice"]:
-        from studio_shell import open_project
-        open_project(main,path=state["choice"])
+    elif state["choice"]=="open_existing":
+        # El modal de bienvenida ya ha terminado; el explorador se abre
+        # sin una sesión modal padre activa.
+        from file_dialogs import get_open_file_name
+        source,_=get_open_file_name(main,"Abrir proyecto StemMIDI",
+                str(PROJECTS if PROJECTS.exists() else ROOT),
+                "Proyecto StemMIDI (*.stemstudio.json *.json)")
+        if source:
+            from studio_shell import open_project
+            open_project(main,path=source)
+        else:
+            QTimer.singleShot(0,lambda:startup(main))

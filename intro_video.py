@@ -21,7 +21,40 @@ from studio_paths import workspace_root
 
 
 def intro_path() -> Path:
-    return workspace_root(__file__) / "intro" / "StemMIDI_Intro_Definitiva.mp4"
+    """Localiza el vídeo aprobado en recursos empaquetados o en el proyecto.
+
+    En un paquete PyInstaller los recursos son de solo lectura; no buscar
+    el vídeo exclusivamente en las preferencias del usuario.
+    """
+    name="StemMIDI_Intro_Definitiva.mp4"
+    candidates=[]
+    bundle=getattr(sys,"_MEIPASS",None)
+    if bundle:
+        candidates.append(Path(bundle)/"intro"/name)
+    candidates.extend((
+        Path(__file__).resolve().parent/"intro"/name,
+        workspace_root(__file__)/"intro"/name,
+    ))
+    for video in candidates:
+        if video.is_file():
+            return video
+    return candidates[0]
+
+
+def _intro_player():
+    """FFplay del paquete si está incluido, o reproductor del sistema."""
+    candidates=[]
+    bundle=getattr(sys,"_MEIPASS",None)
+    if bundle:
+        root=Path(bundle)
+        candidates.extend((
+            root/"vendor"/"native"/"bin"/"ffplay",
+            root/"vendor"/"ffmpeg"/"ffplay.exe",
+        ))
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return shutil.which("ffplay")
 
 
 def play_external_intro() -> bool:
@@ -34,13 +67,14 @@ def play_external_intro() -> bool:
     if os.environ.get("STEMMIDI_INTRO_PLAYED") == "1":
         return True
     video = intro_path()
-    if not video.is_file() or sys.platform != "linux":
+    if not video.is_file():
         return False
-    player = shutil.which("ffplay")
+    player = _intro_player()
     if not player:
         return False
     env = os.environ.copy()
-    env.setdefault("SDL_AUDIODRIVER", "pulseaudio")
+    if sys.platform == "linux":
+        env.setdefault("SDL_AUDIODRIVER", "pulseaudio")
     command = [
         player, "-hide_banner", "-loglevel", "error", "-autoexit",
         "-fs", "-noborder", "-window_title", "StemMIDI Studio - Intro",
@@ -69,12 +103,13 @@ def start_external_intro():
     if os.environ.get("STEMMIDI_INTRO_PLAYED") == "1":
         return None
     video=intro_path()
-    if not video.is_file() or sys.platform!="linux":
+    if not video.is_file():
         return None
-    player=shutil.which("ffplay")
+    player=_intro_player()
     if not player:return None
     env=os.environ.copy()
-    env.setdefault("SDL_AUDIODRIVER","pulseaudio")
+    if sys.platform=="linux":
+        env.setdefault("SDL_AUDIODRIVER","pulseaudio")
     command=[player,"-hide_banner","-loglevel","error","-autoexit",
              "-fs","-noborder","-window_title","StemMIDI Studio - Intro",
              "-exitonkeydown",str(video)]
