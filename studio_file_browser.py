@@ -214,6 +214,13 @@ class StemFileBrowser(QDialog):
         self._history_index=-1
         self._updating=False
         self._model=_StyledFileSystemModel(self)
+        # macOS CoreServices FSEvents puede bloquear el hilo GUI en
+        # FSEventStreamFlushSync al cambiar de carpeta, especialmente con
+        # volúmenes externos. QFileSystemModel ya enumera directorios
+        # asíncronamente: desactivar sólo la vigilancia continua en Cocoa.
+        # El botón Actualizar permite consultar de nuevo el contenido.
+        if os.name == "posix" and __import__("sys").platform == "darwin":
+            self._model.setOption(QFileSystemModel.Option.DontWatchForChanges,True)
         self._model.setRootPath(QDir.rootPath())
         self._model.setFilter(QDir.AllDirs|QDir.Files|QDir.NoDotAndDotDot)
         self._model.setNameFilterDisables(False)
@@ -492,7 +499,10 @@ class StemFileBrowser(QDialog):
             self._history_index=len(self._history)-1
         self.location.setText(str(candidate))
         self.location.setCursorPosition(0)
-        src=self._model.index(str(candidate))
+        # Cargar explícitamente la carpeta actual: QFileSystemModel.index()
+        # no crea índices de rutas profundas todavía no enumeradas.
+        # setRootPath dispara la enumeración asíncrona sin bloquear la GUI.
+        src=self._model.setRootPath(str(candidate))
         self.view.setRootIndex(self._proxy.mapFromSource(src))
         self.view.clearSelection()
         self.search.clear()
