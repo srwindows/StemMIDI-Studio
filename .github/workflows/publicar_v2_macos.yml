@@ -1,0 +1,31 @@
+name: Publicar StemMIDI Studio 2.0 (macOS Intel)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/publicar_v2_macos.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  release:
+    if: github.repository == 'srwindows/StemMIDI-Studio'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verificar versión
+        run: |
+          test "$(cat VERSION)" = "2.0.0"
+          test -f first_run_models.json
+          test -f intro/StemMIDI_Intro_Definitiva.mp4
+      - name: Publicar etiqueta v2.0.0 y notas
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view v2.0.0 >/dev/null 2>&1; then
+            echo 'La versión v2.0.0 ya existe'
+            exit 0
+          fi
+          gh release create v2.0.0 --target "$GITHUB_SHA" \
+            --title 'StemMIDI Studio 2.0 — macOS Intel' \
+            --notes 'Versión 2.0 para macOS Intel: código fuente, catálogo de 11 IAs instalables bajo demanda y modelos de composición propios. No se incluyen pesos de terceros ni datos privados. La aplicación macOS requiere adjuntar el instalador DMG firmado ad hoc (no notarizado). Windows se reserva para la versión 3.0.'
