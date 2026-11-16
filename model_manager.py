@@ -65,7 +65,7 @@ class ModelManager(QWidget):
         self.family.currentIndexChanged.connect(self.refresh_table)
         toolbar.addWidget(self.family)
         self.arch=QComboBox()
-        self.arch.addItems(["Todas las arquitecturas","VR","MDX","MDXC","Demucs"])
+        self.arch.addItems(["Todas las arquitecturas","VR","MDX","MDX23C","MDXC","Demucs"])
         self.arch.currentIndexChanged.connect(self.refresh_table)
         toolbar.addWidget(self.arch)
         self.status_filter=QComboBox()
@@ -157,7 +157,10 @@ class ModelManager(QWidget):
             if wanted:
                 if wanted=="drums" and not (set(rec["stems"]) & {"drums","kick","snare","toms","hh","ride","crash"}):
                     continue
-                if wanted!="drums" and wanted not in rec["stems"]:continue
+                if wanted!="drums" and wanted not in rec["stems"]:
+                    if not (family=="Voces" and
+                            rec["filename"] in registry.VOCAL_MODEL_FILES):
+                        continue
             if arch not in ("Todas las arquitecturas",rec["architecture"]):continue
             if query and query not in " ".join((
                  rec["name"],rec["filename"],rec["architecture"],
@@ -195,7 +198,7 @@ class ModelManager(QWidget):
         loaded=sum(registry.installed(r) for r in self.records.values())
         self.summary.setText(
             f"{len(rows)} visibles · {len(self.records)} en catálogo · "
-            f"{loaded} completos en disco · directorio Recuperación/modelos")
+            f"{loaded} completos en disco · directorio {registry.HOME}")
         self.detail()
 
     def detail(self):
@@ -207,10 +210,11 @@ class ModelManager(QWidget):
         active_selected=bool(rec and rec["filename"] in active.values())
         general=bool(rec and registry.is_general(rec))
         drums=bool(rec and registry.is_drum(rec))
+        imported=bool(rec and rec.get('external'))
         self.install.setEnabled(bool(rec and registry.compat(rec)
-                                     and not installed and not busy))
-        self.update.setEnabled(bool(rec and installed and managed and not active_selected and not busy))
-        self.remove.setEnabled(bool(rec and installed and managed and not active_selected and not busy))
+                                     and not installed and not busy and not imported))
+        self.update.setEnabled(bool(rec and installed and managed and not active_selected and not busy and not imported))
+        self.remove.setEnabled(bool(rec and installed and managed and not active_selected and not busy and not imported))
         self.use_general.setEnabled(installed and general and not busy)
         self.use_drum.setEnabled(installed and drums and not busy)
         self.cancel.setEnabled(busy)
@@ -233,7 +237,7 @@ class ModelManager(QWidget):
 
     def fetch_catalog(self):
         if self.proc is not None:return
-        self._run([str(registry.ENGINE),"-l","--list_format=json"],
+        self._run([str(registry.ENGINE),"-l"],
                   "catalog",None)
         self.progress.setText("Consultando catálogo del motor…")
 
@@ -244,9 +248,9 @@ class ModelManager(QWidget):
         busy=sep.process is not None or drum.process is not None
         busy=busy or drum.studio.process is not None
         if not busy:return False
-        return (rec["filename"]==sep.profile.currentText()
-                or rec["filename"] in (sep.profile.currentData(),
-                                       drum.model_filename())
+        from separador import MODELS
+        return (rec["filename"]==MODELS.get(sep.profile.currentText())
+                or rec["filename"]==drum.model_filename()
                 or rec["filename"] in registry.model_active().values())
 
     def start_download(self,kind):
@@ -258,8 +262,14 @@ class ModelManager(QWidget):
                 "Detén el procesamiento de audio antes de actualizar este modelo.")
             return
         if not registry.compat(rec):return
-        if not registry.ENGINE.is_file():
-            QMessageBox.warning(self,"Motor ausente","No se encuentra audio-separator.")
+        if rec.get('external'):
+            QMessageBox.information(self,'Modelo local',
+                'Este checkpoint lo añadiste desde tu equipo. Para instalar otro usa «Importar modelo…» en el módulo de batería; no existe una descarga oficial automática.')
+            return
+        install_engine=registry.engine_for(rec)
+        if not install_engine.is_file():
+            QMessageBox.warning(self,"Motor ausente",
+                "No se encuentra el motor de instalación de este modelo.")
             return
         if kind=="install" and registry.installed(rec):return
         if kind=="update" and (not registry.model_is_managed(rec)
@@ -281,7 +291,7 @@ class ModelManager(QWidget):
         self._stage=registry.HOME/".descargas_stemmidi"/(
             str(uuid.uuid4())+"_"+rec["filename"].replace(".","_"))
         self._stage.mkdir(parents=True,exist_ok=False)
-        self._run([str(registry.ENGINE),"--model_filename",rec["filename"],
+        self._run([str(install_engine),"--model_filename",rec["filename"],
                    "--model_file_dir",str(self._stage),"--download_model_only"],
                   kind,rec)
         self.progress.setText("Descargando a carpeta temporal: "+rec["name"])

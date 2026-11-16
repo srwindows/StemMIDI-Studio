@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import sys
 import tempfile
 from pathlib import Path
 
@@ -399,7 +400,18 @@ class ProjectMixerView(QWidget):
             process.errorOccurred.connect(
                 lambda error,p=process,k=key:
                 self._midi_error(p,k,error))
-            process.start("timidity",[str(file),"-Ow","-o",str(dest),*options])
+            if sys.platform=="darwin":
+                from soundfont_catalog import system_soundfont
+                bank=Path(sf2) if sf2 and Path(sf2).is_file() else system_soundfont()
+                if bank is None:
+                    self._midi_failed(process,key,"Banco General MIDI no disponible")
+                    return
+                process.start("fluidsynth",[
+                    "-ni","-g","0.7","-r","44100",
+                    "-F",str(dest),str(bank),str(file)])
+            else:
+                process.start("timidity",[
+                    str(file),"-Ow","-o",str(dest),*options])
             self.summary.setText("Sintetizando MIDI para mezclar: "+file.name)
             if self.transport:self.transport.selection_changed()
             return
@@ -407,7 +419,7 @@ class ProjectMixerView(QWidget):
     def _midi_error(self,proc,key,error):
         if proc is not self._proc:return
         if error==QProcess.FailedToStart:
-            self._midi_failed(proc,key,"TiMidity no está disponible")
+            self._midi_failed(proc,key,"Motor MIDI integrado no disponible")
 
     def _midi_finished(self,proc,key,dest,code,status):
         if proc is not self._proc:return

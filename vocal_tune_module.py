@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 )
 from task_staging import TaskStorage
 from preview_player import PreviewPlayer
-from studio_paths import workspace_root
+from studio_paths import workspace_root,ia_python,worker_script
 from studio_slider_spin import StudioSliderSpin
 from ux_controls import PresetStrip
 ROOT=workspace_root(__file__)
@@ -631,7 +631,7 @@ class VocalTuneModule(QWidget):
         self._sync_effect_availability()
 
     def executable(self):
-        path=ROOT/"entorno_ia"/"bin"/"python"
+        path=ia_python(__file__)
         return path if path.is_file() else None
 
     def refresh_sources(self):
@@ -703,7 +703,7 @@ class VocalTuneModule(QWidget):
         self._engine_indicator.set_cancel_callback(self.cancel)
         self._engine_indicator.attach(proc,self.status.text())
         self._set_busy(True)
-        proc.start(str(executable),[str(ROOT/"vocal_tune_engine.py"),
+        proc.start(str(executable),[str(worker_script(__file__,"vocal_tune_engine.py")),
                    "--input",str(file),"--analyze"])
 
     def analyze(self):
@@ -761,7 +761,7 @@ class VocalTuneModule(QWidget):
         self._engine_indicator.set_cancel_callback(self.cancel)
         self._engine_indicator.attach(proc,self.status.text())
         self._set_busy(True)
-        proc.start(str(python),[str(ROOT/"vocal_tune_engine.py"),
+        proc.start(str(python),[str(worker_script(__file__,"vocal_tune_engine.py")),
             "--input",str(source),"--output",str(target),
             "--tonic",str(self.tonic.currentIndex()),
             "--scale",str(self.scale.currentText()),
@@ -842,7 +842,7 @@ class VocalTuneModule(QWidget):
         self._engine_indicator.attach(proc,self.status.text())
         self._set_busy(True)
         proc.start(str(python),[
-            str(ROOT/"vocal_interpretation_engine.py"),
+            str(worker_script(__file__,"vocal_interpretation_engine.py")),
             "--source",str(mine),"--reference",str(reference),
             "--output",str(target),
             "--melody",str(self.learn_melody.value()),

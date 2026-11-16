@@ -1,0 +1,231 @@
+{
+  "schema": 1,
+  "source": "Archivos instalados y verificados de StemMIDI Studio, 2026-11-16. Descarga directa únicamente de repositorios de los respectivos autores.",
+  "models": [
+    {
+      "id": "htdemucs_6s.yaml",
+      "name": "Demucs · Voces, batería, bajo, guitarra, piano y otros",
+      "recommended": true,
+      "method": "engine",
+      "files": [
+        {
+          "path": "htdemucs_6s.yaml",
+          "bytes": 21,
+          "sha256": "207405151270af8fd81c2373c25d27950916682ac91dca7884a11ce13dad6f58"
+        },
+        {
+          "path": "5c90dfd2-34c22ccb.th",
+          "bytes": 54996327,
+          "sha256": "34c22ccb381c6f9fdbf324f04e1e2fe21aaaf293f5ded163a162697ff9a02ddd"
+        }
+      ],
+      "license": "Licencia y condiciones del autor a consultar antes de redistribuir; la instalación descarga del origen."
+    },
+    {
+      "id": "model_mel_band_roformer_ep_3005_sdr_11.4360.ckpt",
+      "name": "MelBand RoFormer · Voces e instrumental",
+      "recommended": true,
+      "method": "engine",
+      "files": [
+        {
+          "path": "model_mel_band_roformer_ep_3005_sdr_11.4360.ckpt",
+          "bytes": 1007816988,
+          "sha256": "21b9d0958e35b8ebfbe2afe69bbd5444e5ffe2f5d80ae0d583b833d2f3c0d139"
+        },
+        {
+          "path": "model_mel_band_roformer_ep_3005_sdr_11.4360.yaml",
+          "bytes": 1794,
+          "sha256": "d9b083b48dfdd0bd10f8a29a9c18777b0419496d938827f48a1db31bf0193aa3"
+        }
+      ],
+      "license": "Licencia y condiciones del autor a consultar antes de redistribuir; la instalación descarga del origen."
+    },
+    {
+      "id": "aufr33-jarredou_DrumSep_model_mdx23c_ep_141_sdr_10.8059.ckpt",
+      "name": "DrumSep · Batería en seis componentes",
+      "recommended": true,
+      "method": "engine",
+      "files": [
+        {
+          "path": "bateria/aufr33-jarredou_DrumSep_model_mdx23c_ep_141_sdr_10.8059.ckpt",
+          "bytes": 437652699,
+          "sha256": "d2a4aa53eb584d21eead358a4e66d1882ad182911be018f052b5da73be9096d0"
+        },
+        {
+          "path": "bateria/aufr33-jarredou_DrumSep_model_mdx23c_ep_141_sdr_10.8059.yaml",
+          "bytes": 2417,
+          "sha256": "17d1649a227f841165bdb4c11a42082898192a1ea3ceab7e7e0b9293d6589dd6"
+        }
+      ],
+      "license": "Licencia y condiciones del autor a consultar antes de redistribuir; la instalación descarga del origen."
+    },
+    {
+      "id": "bs_mega_53stem_electric-guitar_mvsep.ckpt",
+      "name": "MVSep Mega 53 · Guitarra eléctrica",
+      "recommended": true,
+      "method": "direct",
+      "files": [
+        {
+          "path": "bs_mega_53stem_electric-guitar_mvsep.ckpt",
+          "bytes": 77624038,
+          "sha256": "cd506bfce9474f91a31001967f2c4935ce4e67f643da3df20d04058da927c553",
+          "url": "https://huggingface.co/noblebarkrr/BS-Roformer-MVSep-Mega-53-stems/resolve/main/v1/bs_mega_53stem_electric-guitar_mvsep.ckpt?download=true"
+        },
+        {
+          "path": "bs_mega_53stem_electric-guitar_mvsep_config.yaml",
+          "bytes": 1584,
+          "sha256": "e89d0646a99f08e99e56d71de22b5accee2628fd11a91928ad556fc7b8617ecb",
+          "url": "https://huggingface.co/noblebarkrr/BS-Roformer-MVSep-Mega-53-stems/resolve/main/v1/bs_mega_53stem_electric-guitar_mvsep_config.yaml?download=true"
+        }
+      ],
+      "license": "Licencia y condiciones del autor a consultar antes de redistribuir; la instalación descarga del origen."
+    },
+    {
+      "id": "bs_mega_53stem_acoustic-guitar_mvsep.ckpt",
+      "name": "MVSep Mega 53 · Guitarra acústica",
+      "recommended": true,
+      "method": "direct",
+      "files": [
+        {
+          "path": "bs_mega_53stem_acoustic-guitar_mvsep.ckpt",
+          "bytes": 77624038,
+          "sha256": "fa386b2e7b1ea4f12b9b5c557444c0dc78648ef4ee299de2759d86457e182b3e",
+          "url": "https://huggingface.co/noblebarkrr/BS-Roformer-MVSep-Mega-53-stems/resolve/main/v1/bs_mega_53stem_acoustic-guitar_mvsep.ckpt?download=true"
+        },
+        {
+          "path": "bs_mega_53stem_acoustic-guitar_mvsep_config.yaml",
+          "bytes": 1584,
+          "sha256": "040148363929b68fd4a4e323358a245938568692ca201fc2f703b6449dc8b569",
+          "url": "https://huggingface.co/noblebarkrr/BS-Roformer-MVSep-Mega-53-stems/resolve/main/v1/bs_mega_53stem_acoustic-guitar_mvsep_config.yaml?download=true"
+        }
+      ],
+      "license": "Licencia y condiciones del autor a consultar antes de redistribuir; la instalación descarga del origen."
+    },
+    {
+      "id": "model_mel_band_roformer_ep_72_sdr_3.2232.ckpt",
+      "name": "MelBand · Guitarra solista y rítmica",
+      "recommended": true,
+      "method": "direct",
+      "files": [
+        {
+          "path": "model_mel_band_roformer_ep_72_sdr_3.2232.ckpt",
+          "bytes": 337073664,
+          "sha256": "b3c47bca33609ca1ba0bb2d2076410bfd1eb941b051b72afc1f3e24d12b17eef",
+          "url": "https://huggingface.co/dshdaaf/separation-models/resolve/main/GUITAR/GUITAR-Mel-Roformer_lead_rhythm_by_Dry_Paint_Dealer_Undr/model_mel_band_roformer_ep_72_sdr_3.2232.ckpt?download=true"
+        },
+        {
+          "path": "config_mel_band_roformer_Lead_Rhythm_Guitar.yaml",
+          "bytes": 2673,
+          "sha256": "fc47975bba58b7b4c6de363bfe158943092c77bfb0b9a41c0c741eafba330359",
+          "url": "https://huggingface.co/dshdaaf/separation-models/resolve/main/GUITAR/GUITAR-Mel-Roformer_lead_rhythm_by_Dry_Paint_Dealer_Undr/config_mel_band_roformer_Lead_Rhythm_Guitar.yaml?download=true"
+        }
+      ],
+      "license": "Licencia y condiciones del autor a consultar antes de redistribuir; la instalación descarga del origen."
+    },
+    {
+      "id": "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt",
+      "name": "MelBand · Voz solista y coros",
+      "recommended": false,
+      "method": "engine",
+      "files": [
+        {
+          "path": "voces/mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt",
+          "bytes": 913096801,
+          "sha256": "1de20d459332fe8869aeb01327a31df0032262706e1365114e852dc271779813"
+        },
+        {
+          "path": "voces/mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956_config.yaml",
+          "bytes": 1726,
+          "sha256": "b35077d94861f068097cce1a5e54633c055e7dcc2613eade4e4dc7c7c9c3f48b"
+        }
+      ],
+      "license": "Licencia y condiciones del autor a consultar antes de redistribuir; la instalación descarga del origen."
+    },
+    {
+      "id": "bs_roformer_male_female_by_aufr33_sdr_7.2889.ckpt",
+      "name": "BS RoFormer · Voces masculinas y femeninas",
+      "recommended": false,
+      "method": "engine",
+      "files": [
+        {
+          "path": "voces/bs_roformer_male_female_by_aufr33_sdr_7.2889.ckpt",
+          "bytes": 527119779,
+          "sha256": "3cf11736d1b42a11ae55d8299316585921477dd2a671b24b663660846ca9861b"
+        },
+        {
+          "path": "voces/config_chorus_male_female_bs_roformer.yaml",
+          "bytes": 1847,
+          "sha256": "363ef6bef5f0fd89b69e6e0f90dcc102dec6aaeb6e55790cae1796bebdf5097e"
+        }
+      ],
+      "license": "Licencia y condiciones del autor a consultar antes de redistribuir; la instalación descarga del origen."
+    },
+    {
+      "id": "htdemucs.yaml",
+      "name": "Demucs · Cuatro stems",
+      "recommended": false,
+      "method": "engine",
+      "files": [
+        {
+          "path": "htdemucs.yaml",
+          "bytes": 21,
+          "sha256": "239c445d0b14454d541ad8bd9bb271c9e536d267e8a4625208744cbb2e7bb66c"
+        },
+        {
+          "path": "955717e8-8726e21a.th",
+          "bytes": 84141911,
+          "sha256": "8726e21a993978c7ba086d3872e7608d7d5bfca646ca4aca459ffda844faa8b4"
+        }
+      ],
+      "license": "Licencia y condiciones del autor a consultar antes de redistribuir; la instalación descarga del origen."
+    },
+    {
+      "id": "htdemucs_ft.yaml",
+      "name": "Demucs FT · Cuatro stems",
+      "recommended": false,
+      "method": "engine",
+      "files": [
+        {
+          "path": "htdemucs_ft.yaml",
+          "bytes": 149,
+          "sha256": "69470b8c1bbd674437b51bc9fb491327a10ab0396b702c93389b9cf750016346"
+        },
+        {
+          "path": "04573f0d-f3cf25b2.th",
+          "bytes": 84141271,
+          "sha256": "f3cf25b222c4eed7cd49dd8b2c9597d50c18bd154090f7b919cfa5f93cf22c49"
+        },
+        {
+          "path": "92cfc3b6-ef3bcb9c.th",
+          "bytes": 84141271,
+          "sha256": "ef3bcb9c8b40d14ae5d51b6db2587339cc12c6b77c0be151ce6d69002e087bf2"
+        },
+        {
+          "path": "d12395a8-e57c48e6.th",
+          "bytes": 84141271,
+          "sha256": "e57c48e6b0e38af4f7118d7bd08c49f0a0c0edf7d09143bdd902ea0d237303e6"
+        },
+        {
+          "path": "f7e0c4bc-ba3fe64a.th",
+          "bytes": 84141271,
+          "sha256": "ba3fe64ae8ef66ac9a4857222ce48efbdc5eb3ad375cb79dd13debee5aaa4066"
+        }
+      ],
+      "license": "Licencia y condiciones del autor a consultar antes de redistribuir; la instalación descarga del origen."
+    },
+    {
+      "id": "UVR-MDX-NET-Inst_HQ_3.onnx",
+      "name": "UVR MDX-NET · Instrumental",
+      "recommended": false,
+      "method": "engine",
+      "files": [
+        {
+          "path": "UVR-MDX-NET-Inst_HQ_3.onnx",
+          "bytes": 66759214,
+          "sha256": "317554b07fe1ea5279a77f2b1520a41ea4b93432560c4ffd08792c30fddf9adc"
+        }
+      ],
+      "license": "Licencia y condiciones del autor a consultar antes de redistribuir; la instalación descarga del origen."
+    }
+  ]
+}

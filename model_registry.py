@@ -8,14 +8,14 @@ from __future__ import annotations
 import json,re,os,time,shutil
 from urllib.parse import urlparse,unquote
 from pathlib import Path
-from studio_paths import workspace_root
+from studio_paths import workspace_root,ia_executable
 
 ROOT=workspace_root(__file__)
 HOME=ROOT/"modelos"
 CACHE=HOME/"catalogo_audio_separator.json"
 MANIFEST=HOME/"modelos_administrados.json"
 ACTIVE=HOME/"modelos_activos.json"
-ENGINE=ROOT/"entorno_ia"/"bin"/"audio-separator"
+ENGINE=ia_executable(__file__)
 GROUPS=("VR","MDX","MDXC","Demucs")
 AUDIO_LABELS={"vocals":"Voces","instrumental":"Instrumental",
     "drums":"Batería","bass":"Bajo","guitar":"Guitarra",
@@ -24,17 +24,57 @@ AUDIO_LABELS={"vocals":"Voces","instrumental":"Instrumental",
     "ride":"Ride","crash":"Crash"}
 DRUM_STEMS={"kick","snare","toms","hh","ride","crash"}
 ALLOWED_SUFFIX={".ckpt",".onnx",".yaml",".yml",".pth",".th",".json"}
+# Archivos exactos exigidos por audio-separator 0.22 (no basta un YAML).
 BUILTIN={
- "MDXC":[("MDX23C DrumSep · 6 pistas","MDX23C-DrumSep-aufr33-jarredou.ckpt",
-     ["kick","snare","toms","hh","ride","crash"],
-     ["MDX23C-DrumSep-aufr33-jarredou.ckpt","config_drumsep_mdx23c.yaml"])],
- "Demucs":[("Demucs 4 stems","htdemucs.yaml",
-     ["vocals","drums","bass","other"],["htdemucs.yaml"]),
-     ("Demucs 6 stems","htdemucs_6s.yaml",
-     ["vocals","drums","bass","guitar","piano","other"],["htdemucs_6s.yaml"])],
- "MDX":[("UVR MDX instrumental","UVR-MDX-NET-Inst_HQ_3.onnx",
-     ["instrumental","vocals"],["UVR-MDX-NET-Inst_HQ_3.onnx"])]
+ "MDXC":[
+  ("MDX23C DrumSep · 6 pistas (motor MIT)",
+   "aufr33-jarredou_DrumSep_model_mdx23c_ep_141_sdr_10.8059.ckpt",
+   ["kick","snare","toms","hh","ride","crash"],
+   ["aufr33-jarredou_DrumSep_model_mdx23c_ep_141_sdr_10.8059.ckpt",
+    "aufr33-jarredou_DrumSep_model_mdx23c_ep_141_sdr_10.8059.yaml"]),
+  ("MelBand RoFormer · Voces e instrumental",
+   "model_mel_band_roformer_ep_3005_sdr_11.4360.ckpt",
+   ["vocals","instrumental"],
+   ["model_mel_band_roformer_ep_3005_sdr_11.4360.ckpt",
+    "model_mel_band_roformer_ep_3005_sdr_11.4360.yaml"]),
+  ("MelBand RoFormer · Karaoke solista/coros",
+   "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt",
+   ["vocals","instrumental"],
+   ["mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt",
+    "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956_config.yaml"]),
+ ],
+ "Demucs":[
+  ("Demucs 4 stems","htdemucs.yaml",
+   ["vocals","drums","bass","other"],
+   ["htdemucs.yaml","955717e8-8726e21a.th"]),
+  ("Demucs 6 stems","htdemucs_6s.yaml",
+   ["vocals","drums","bass","guitar","piano","other"],
+   ["htdemucs_6s.yaml","5c90dfd2-34c22ccb.th"]),
+  ("Demucs FT 4 stems","htdemucs_ft.yaml",
+   ["vocals","drums","bass","other"],
+   ["htdemucs_ft.yaml","04573f0d-f3cf25b2.th",
+    "92cfc3b6-ef3bcb9c.th","d12395a8-e57c48e6.th",
+    "f7e0c4bc-ba3fe64a.th"]),
+ ],
+ "MDX":[
+  ("UVR MDX instrumental","UVR-MDX-NET-Inst_HQ_3.onnx",
+   ["vocals","instrumental"],["UVR-MDX-NET-Inst_HQ_3.onnx"]),
+ ],
 }
+
+# La IA vocal secundaria guarda sus pesos en /modelos/voces, no en
+# /modelos. El gestor debe reconocerlos como instalados allí.
+VOCAL_MODEL_FILES={
+    "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt",
+    "bs_roformer_male_female_by_aufr33_sdr_7.2889.ckpt",
+    "mel_band_roformer_karaoke_gabox.ckpt",
+}
+
+KNOWN_GENERAL_STEMS={
+ entry[1]:entry[2] for arch,entries in BUILTIN.items()
+ for entry in entries if arch!="MDXC" or "DrumSep" not in entry[1]
+}
+
 
 def read_json(path,default):
     try:
@@ -70,32 +110,63 @@ def catalog_file_name(value):
     return name if safe_name(name) and not parsed.query else None
 
 def records_from_json(raw):
+    """Acepta catálogo enriquecido y catálogo REAL de audio-separator 0.22.
+
+    El comando `audio-separator -l` devuelve grupos de modelos en los que
+    los datos son cadenas (MDX, VR) o mapas peso→config (MDXC/Demucs).
+    La versión antigua del gestor los descartaba TODOS por falta de
+    `filename`, anunciando erróneamente que no había catálogo.
+    """
     if not isinstance(raw,dict):raise ValueError("Catálogo incorrecto")
     out={}
     for arch,items in raw.items():
         if arch not in GROUPS or not isinstance(items,dict):continue
         for title,data in items.items():
-            if not isinstance(data,dict):continue
-            filename=data.get("filename")
-            files=data.get("download_files") or [filename]
+            if isinstance(data,str):
+                filename=data
+                files=[filename]
+                stems=KNOWN_GENERAL_STEMS.get(filename,[])
+                scores={}
+                target=""
+            elif isinstance(data,dict) and "filename" in data:
+                filename=data.get("filename")
+                files=data.get("download_files") or [filename]
+                stems=data.get("stems") or []
+                scores=data.get("scores") if isinstance(data.get("scores"),dict) else {}
+                target=str(data.get("target_stem") or "")
+            elif isinstance(data,dict) and data:
+                # Demucs descarga los .th además del .yaml; MDXC precisa
+                # tanto su .ckpt como la configuración indicada en el valor.
+                if arch=="Demucs":
+                    filename=next((k for k in data if k.endswith((".yaml",".yml"))),None)
+                    files=list(data)
+                else:
+                    filename=next((k for k in data if k.endswith((".ckpt",".onnx",".pth"))),None)
+                    files=([filename] + [v for k,v in data.items()
+                                      if k==filename and isinstance(v,str)])
+                stems=KNOWN_GENERAL_STEMS.get(filename,[])
+                scores={}
+                target=""
+            else:
+                continue
             if not safe_name(filename) or not isinstance(files,list) or len(files)>12:
                 continue
             files=[catalog_file_name(f) for f in files]
-            if not all(f and Path(f).suffix.lower() in ALLOWED_SUFFIX
-                       for f in files):continue
-            stems=data.get("stems") or []
+            if not files or not all(f and Path(f).suffix.lower() in ALLOWED_SUFFIX
+                                    for f in files):continue
+            files=list(dict.fromkeys(files))
             if not isinstance(stems,list):continue
             stemlist=[str(v).strip().lower() for v in stems][:15]
             if not all(re.fullmatch(r"[a-z_ -]{1,30}",v) for v in stemlist):
                 continue
-            scores=data.get("scores") if isinstance(data.get("scores"),dict) else {}
             out[filename]={
                 "name":str(title)[:130],"filename":filename,
                 "files":files,"architecture":arch,"stems":stemlist,
-                "scores":scores,"target":str(data.get("target_stem") or ""),
+                "scores":scores,"target":target,
                 "license":"Consulta las condiciones del autor; no verificada."
             }
     return out
+
 
 def fallback():
     data={}
@@ -127,10 +198,37 @@ def catalog():
         except ValueError:pass
         _catalog_cache_key=key
         _catalog_cache_records=records
-    # Los módulos reciben registros independientes, como antes:
-    # nunca pueden modificar accidentalmente la copia maestra.
+    # El catálogo remoto se puede actualizar sin borrar modelos externos.
     from copy import deepcopy
-    return deepcopy(_catalog_cache_records)
+    result=deepcopy(_catalog_cache_records)
+    try:
+        from external_model_import import records
+        for filename,entry in records().items():
+            if not entry.get('catalog_known'):
+                result[filename]={
+                  'name':entry.get('display',filename),'filename':filename,
+                  'files':entry['files'],'architecture':entry['family'],
+                  'stems':entry['stems'],'scores':{},'target':'',
+                  'license':'Modelo importado por el usuario; comprobar licencia del autor.',
+                  'external':True,'role':entry['role']}
+            elif filename in result:
+                result[filename]['external']=True
+                result[filename]['role']=entry['role']
+    except (ValueError,TypeError,OSError,KeyError):pass
+    # Modelos MDX23C importados por el usuario: solo seis stems reales y
+    # tras pasar una carga completa en el trabajador de IA.
+    try:
+        from drum_custom_models import list_models,ready
+        for filename,entry in list_models().items():
+            if ready(filename):
+                result[filename]={
+                    'name':entry.get('display',filename),'filename':filename,
+                    'files':[filename,entry['config']],
+                    'architecture':'MDX23C','stems':entry['stems'],
+                    'scores':{},'target':'','role':'drum','external':True,
+                    'license':'Modelo añadido por el usuario. Comprobar licencia de origen.'}
+    except (ValueError,TypeError,OSError,KeyError):pass
+    return result
 
 def record_for(filename):
     return catalog().get(str(filename))
@@ -139,6 +237,7 @@ def is_drum(record):
     return set(record.get("stems") or [])==DRUM_STEMS
 
 def is_general(record):
+    if record.get('external') and record.get('role')=='vocal':return False
     stems=set(record.get("stems") or [])
     return (bool(stems) and
         (stems.issubset({"vocals","instrumental","other"}) or
@@ -149,13 +248,15 @@ def compat(record):
     possibilities=[]
     if is_general(record):possibilities.append("Separación de audio")
     if is_drum(record):possibilities.append("Desglose de batería")
+    if record["filename"] in VOCAL_MODEL_FILES or record.get('role')=='vocal':
+        possibilities.append("Voces · solista/coros")
     return possibilities
 
 def filename_path(record):
-    # Los modelos DrumSep históricos se guardan en modelos/bateria;
-    # los otros en modelos, sin moverlos.
-    if is_drum(record):
-        return HOME/"bateria"
+    # Conservar los pesos en el módulo que realmente los usa.
+    if record.get('external') and record.get('role')=='vocal':return HOME/'voces'
+    if is_drum(record):return HOME/"bateria"
+    if record["filename"] in VOCAL_MODEL_FILES:return HOME/"voces"
     return HOME
 
 def locations(record):
@@ -165,13 +266,30 @@ def locations(record):
 def existing_files(record):
     files=[]
     for fname in record["files"]:
+        # Evitar falsos positivos por descargas interrumpidas: un archivo de
+        # pesos de unas decenas de bytes no constituye un modelo instalado.
+        minimum=1024 if Path(fname).suffix.lower() in (
+            ".ckpt",".pth",".th",".onnx") else 1
         match=next((folder/fname for folder in locations(record)
-                    if (folder/fname).is_file() and (folder/fname).stat().st_size>0),None)
+                    if (folder/fname).is_file() and
+                    (folder/fname).stat().st_size>=minimum),None)
         files.append(match)
     return files
 
+def engine_for(record):
+    """Motor de instalación según modelo; MDXNet sirve seis pistas reales."""
+    name=str(record.get("filename","")) if record else ""
+    if name=="aufr33-jarredou_DrumSep_model_mdx23c_ep_141_sdr_10.8059.ckpt" or record.get('role')=='drum':
+        from studio_paths import ia_python
+        native=ia_python(__file__).parent/"drum-separator"
+        if not native.is_file():
+            native=Path(__file__).resolve().parent.parent/"portable_resources"/"ia_runtime"/"bin"/"drum-separator"
+        return native
+    return ENGINE
+
+
 def installed(record):
-    return all(existing_files(record))
+    return bool(record) and all(existing_files(record))
 
 def locate(record):
     paths=existing_files(record)

@@ -180,6 +180,8 @@ def run_model_controls(sep,run):
     sync_from_profile()
 
 def enhance_activity(sep,activity):
+    from separation_review_ui import install_progress_panel
+    return install_progress_panel(sep,activity)
     # La antigua zona solo desplegaba un log de 74px, sin telemetría.
     layout=activity.body
     for index in reversed(range(layout.count())):
@@ -292,14 +294,22 @@ def install(main):
     entry,selection,preview,run,tools,activity=cards
     reflow_player(sep.source_preview,True)
     reflow_player(main.workbench.sep_results.preview,False)
-    main.workbench.sep_results.preview.setMinimumHeight(160)
+    from separation_review_ui import (install_results_review,
+        compact_review_transport,dark_combo_popup)
+    install_results_review(main)
+    compact_review_transport(main.workbench.sep_results.preview)
+    for combo in (sep.quality,sep.profile,sep.export_fmt,sep.presets.choices):
+        dark_combo_popup(combo)
     run_model_controls(sep,run)
+    dark_combo_popup(sep.model_run_selector)
     def refresh_ia_when_returning(_=None):
         if main.tabs.currentWidget() is main.workbench.separation_tab and not sep.busy:
             sep.refresh_model_registry()
             sep._model_selector_sync()
     main.tabs.currentChanged.connect(refresh_ia_when_returning)
     enhance_activity(sep,activity)
+    # La revisión se envuelve DESPUÉS de añadir Aprobar (main.py),
+    # para no sacar ese botón del área de resultados al desplazarse.
     # Consumir el espacio antes vacío debajo de los módulos.
     root=sep.layout().itemAt(0).widget().layout()
     board=sep._dashboard_board
@@ -310,10 +320,10 @@ def install(main):
     board.setRowStretch(0,0)
     board.setRowStretch(1,1)
     board.setRowStretch(2,0)
-    board.setRowStretch(3,4)
+    board.setRowStretch(3,1)
     activity.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Expanding)
-    activity.setMinimumHeight(205)
-    preview.setMinimumHeight(160)
-    run.setMinimumHeight(160)
-    tools.setMinimumHeight(92)
+    activity.setMinimumHeight(115)
+    preview.setMinimumHeight(140)
+    run.setMinimumHeight(143)
+    tools.setMinimumHeight(70)
     return True

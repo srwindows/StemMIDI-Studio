@@ -432,15 +432,51 @@ class MidiToAudioCard(QWidget):
             self.render_preview.set_preview_compressor(
                 self.comp_enabled and not original,self.comp_threshold,
                 self.comp_ratio,self.comp_attack,self.comp_release)
-            options=timidity_options(self)
-            self._preview_soundfont_cfg=self._tmp_sf2_cfg
-            self._tmp_sf2_cfg=None
+            import sys
+            if sys.platform=="darwin":
+                # Mismo motor FluidSynth y DSP de la conversión final,
+                # sin depender de TiMidity ni introducir otro sintetizador.
+                fields=("program_override","preset_bank","override_channel",
+                    "midi_fx","gain_percent","reverb","reverb_level",
+                    "chorus","chorus_level","delay_ms","resampler",
+                    "comp_enabled","comp_threshold","comp_ratio","comp_attack",
+                    "comp_release","eq_enabled","eq_bass","eq_mid",
+                    "eq_treble","adsr_enabled","adsr_attack","adsr_decay",
+                    "adsr_sustain","adsr_release","max_polyphony",
+                    "tempo_percent","transpose_semitones")
+                settings={key:getattr(self,key) for key in fields}
+                settings["soundfont"]=str(self.soundfont) if self.soundfont else None
+                settings["midi_fx"]=[list(x) for x in self.midi_fx]
+                if original:
+                    settings.update(program_override=None,preset_bank=0,
+                        override_channel=None,midi_fx=[],eq_enabled=False,
+                        comp_enabled=False,adsr_enabled=False,
+                        tempo_percent=100,transpose_semitones=0)
+                self._preview_soundfont_cfg=self._temp_path(".json")
+                self._preview_soundfont_cfg.write_text(json.dumps({
+                    "source":str(midi_input),
+                    "sample_rate":44100 if self.rate.currentIndex()==0 else 48000,
+                    "settings":settings}),encoding="utf-8")
+                if getattr(sys,"frozen",False):
+                    program=sys.executable
+                    args=["--stemmidi-render",
+                          str(self._preview_soundfont_cfg),str(self._preview_wave)]
+                else:
+                    program=sys.executable
+                    args=[str(Path(__file__).with_name("midi_offline_render.py")),
+                          "--stemmidi-render",
+                          str(self._preview_soundfont_cfg),str(self._preview_wave)]
+            else:
+                options=timidity_options(self)
+                self._preview_soundfont_cfg=self._tmp_sf2_cfg
+                self._tmp_sf2_cfg=None
+                program="timidity"
+                args=[str(midi_input),"-Ow","-o",str(self._preview_wave),*options]
             proc=QProcess(self)
             self._preview_proc=proc
             proc.finished.connect(lambda rc,status,p=proc:self._preview_finished(p,rc,status))
             proc.errorOccurred.connect(lambda error,p=proc:self._preview_error(p,error))
-            proc.start("timidity",[
-                str(midi_input),"-Ow","-o",str(self._preview_wave),*options])
+            proc.start(program,args)
             self.status.setText("Preescucha A (original)…" if original
                 else "Preescucha B (ajustes + cuantización)…")
             self._notify_expanded()
@@ -454,7 +490,7 @@ class MidiToAudioCard(QWidget):
 
     def _preview_error(self,process,error):
         if process is self._preview_proc and error==QProcess.FailedToStart:
-            self.status.setText("TiMidity no disponible para preescuchar")
+            self.status.setText("Motor FluidSynth de preescucha no disponible")
             self._preview_proc=None
             self._release_preview_files()
             self._notify_expanded()

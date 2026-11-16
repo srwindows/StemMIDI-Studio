@@ -80,7 +80,7 @@ def install(main):
 
     run.heading.setText("04 · PROCESAR AUDIO")
     run.body.setContentsMargins(9,5,9,7)
-    tools.heading.setText("05 · ACCIONES SIGUIENTES")
+    tools.heading.setText("05 · DESHACER, REHACER Y RESET")
     tools.body.setContentsMargins(10,6,10,8)
     activity.heading.setText("06 · ACTIVIDAD DEL MOTOR")
     activity.body.setContentsMargins(10,6,10,8)
@@ -94,19 +94,30 @@ def install(main):
         sep.library_button,sep.load_previous_button,
         next(btn for btn in tools.findChildren(QPushButton) if btn.text()=="Registro")
     ]
+    # Se retiran accesos redundantes al Mezclador, MIDI y stems:
+    # esos módulos ya tienen pestañas propias. No eliminar callbacks.
     for btn in action_buttons:
         old_buttons.removeWidget(btn)
+        btn.hide()
+    undo=QPushButton("↶ Deshacer")
+    redo=QPushButton("↷ Rehacer")
+    reset=QPushButton("Reset")
+    undo.setToolTip("Deshacer el último cambio de opciones de separación.")
+    redo.setToolTip("Rehacer un cambio de opciones deshecho.")
+    reset.setToolTip("Restablecer los parámetros y la selección de pistas; conserva archivos.")
     buttons=QGridLayout()
     buttons.setContentsMargins(0,0,0,0)
-    buttons.setHorizontalSpacing(6)
-    buttons.setVerticalSpacing(6)
-    for i,btn in enumerate(action_buttons):
+    buttons.setHorizontalSpacing(8)
+    buttons.setVerticalSpacing(3)
+    for i,btn in enumerate((undo,redo,reset)):
         btn.setMaximumWidth(16777215)
         btn.setMinimumWidth(0)
-        btn.setMinimumHeight(33)
+        btn.setMinimumHeight(31)
         btn.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
-        buttons.addWidget(btn,i//3,i%3)
+        buttons.addWidget(btn,0,i)
     tools.body.addLayout(buttons)
+    from separation_review_ui import SeparationSettingsHistory
+    sep.settings_history=SeparationSettingsHistory(sep,undo,redo,reset)
     sep._old_tools_buttons_layout=old_buttons
 
     # Reusar cabecera y descripción existentes.
@@ -133,7 +144,7 @@ def install(main):
     for card in all_cards:
         card.setMinimumWidth(0)
         card.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Preferred)
-    dashboard_buttons=action_buttons
+    dashboard_buttons=[undo,redo,reset]
     sep._dashboard_board=board
 
     adaptive=getattr(sep,"_adaptive_separation_layout",None)
@@ -178,9 +189,16 @@ def install(main):
                 QTimer.singleShot(0,self.update)
             return False
         def update(self):
+            # La revisión final puede haberse instalado antes de disparar
+            # un singleShot antiguo. No recuperar tarjetas ni reparentar
+            # botones ya trasladados a Archivo y configuración.
+            final=getattr(sep,"_final_reflow",None)
+            if final is not None:
+                final()
+                return
             import shiboken6
             if not shiboken6.isValid(sep):return
-            narrow=sep.width()<880
+            narrow=sep.width()<755
             if self.mode==narrow:return
             self.mode=narrow
             for card in all_cards:
@@ -188,27 +206,34 @@ def install(main):
             for btn in dashboard_buttons:
                 buttons.removeWidget(btn)
             if narrow:
-                # Estrecho: el formulario ocupa una fila entera, sin
-                # truncarse; acciones agrupadas con la selección.
+                # Ventana estrecha: una columna realmente legible. Un
+                # diseño de 2 columnas aquí tenía ancho mínimo >950px y
+                # cortaba Importar, Rehacer, Modelo y las rutas.
                 board.addWidget(entry,0,0,1,2)
-                entry.setMinimumHeight(198)
-                selection.setMinimumHeight(128)
-                tools.setMinimumHeight(148)
-                preview.setMinimumHeight(158)
-                run.setMinimumHeight(158)
-                board.addWidget(selection,1,0)
-                board.addWidget(tools,1,1)
-                board.addWidget(preview,2,0)
-                board.addWidget(run,2,1)
-                board.setColumnStretch(0,56)
-                board.setColumnStretch(1,44)
+                board.addWidget(selection,1,0,1,2)
+                board.addWidget(preview,2,0,1,2)
+                board.addWidget(run,3,0,1,2)
+                board.addWidget(tools,4,0,1,2)
+                board.addWidget(activity,5,0,1,2)
+                entry.setMinimumHeight(214)
+                selection.setMinimumHeight(135)
+                preview.setMinimumHeight(155)
+                run.setMinimumHeight(160)
+                tools.setMinimumHeight(72)
+                activity.setMinimumHeight(105)
+                # La superficie se desplaza verticalmente: jamás comprimir
+                # el contenido hasta dejar controles montados o ilegibles.
+                viewport=sep.layout().itemAt(0).widget()
+                viewport.widget().setMinimumHeight(1100)
+                board.setColumnStretch(0,1)
+                board.setColumnStretch(1,0)
                 for i,btn in enumerate(dashboard_buttons):
-                    buttons.addWidget(btn,i//2,i%2)
-                sep.stem_note.hide()
-                activity.hide()
+                    buttons.addWidget(btn,0,i)
+                sep.stem_note.show()
+                activity.show()
                 header.hide()
                 desc.hide()
-                tools.heading.setText("05 · ACCIONES")
+                tools.heading.setText("05 · AJUSTES")
                 run.heading.setText("04 · PROCESAR")
                 sep.go.setText("Separar")
                 listen=sep.source_preview
@@ -221,9 +246,10 @@ def install(main):
                 listen.channel_mode.setMaximumWidth(110)
                 if preview_label:preview_label.setText("ESCUCHAR ORIGINAL")
             else:
+                sep.layout().itemAt(0).widget().widget().setMinimumHeight(0)
                 entry.setMinimumHeight(194)
                 selection.setMinimumHeight(0)
-                tools.setMinimumHeight(92)
+                tools.setMinimumHeight(73)
                 preview.setMinimumHeight(160)
                 run.setMinimumHeight(160)
                 board.addWidget(entry,0,0)
@@ -238,9 +264,11 @@ def install(main):
                     buttons.addWidget(btn,0,i)
                 sep.stem_note.show()
                 activity.show()
-                header.show()
-                desc.show()
-                tools.heading.setText("05 · ACCIONES SIGUIENTES")
+                # En monitores 1366–1600, estos textos duplican la cabecera
+                # y esconden el transporte/las acciones debajo de pantalla.
+                header.setVisible(sep.width()>=930)
+                desc.setVisible(sep.width()>=930)
+                tools.heading.setText("05 · DESHACER, REHACER Y RESET")
                 run.heading.setText("04 · PROCESAR AUDIO")
                 sep.go.setText("Separar pistas")
                 listen=sep.source_preview

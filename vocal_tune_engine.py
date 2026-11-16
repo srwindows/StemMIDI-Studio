@@ -12,6 +12,7 @@ import math
 from pathlib import Path
 import subprocess
 import sys
+import unicodedata
 import numpy as np
 
 NOTES=("Do","Do#","Re","Re#","Mi","Fa","Fa#","Sol","Sol#","La","La#","Si")
@@ -144,7 +145,7 @@ def apply_dynamics(audio,sr,compression=0,highpass=0):
     channels=signal.reshape(-1,1) if wasmono else signal.copy()
     if highpass:
         cutoff=int(highpass)
-        if not 40<=cutoff<=190:raise ValueError("Filtro de graves incorrecto")
+        if not 1<=cutoff<=190:raise ValueError("Filtro de graves incorrecto")
         filter_sos=butter(2,cutoff,fs=sr,btype="highpass",output="sos")
         channels=sosfilt(filter_sos,channels,axis=0).astype(np.float32)
     if compression:
@@ -273,7 +274,8 @@ def main():
     parser.add_argument("--input",required=True)
     parser.add_argument("--output",default="")
     parser.add_argument("--tonic",type=int,default=0)
-    parser.add_argument("--scale",choices=SCALES.keys(),default="Cromática")
+    parser.add_argument("--scale",type=lambda value:unicodedata.normalize("NFC",value),
+                        choices=SCALES.keys(),default="Cromática")
     parser.add_argument("--strength",type=int,default=75)
     parser.add_argument("--analyze",action="store_true")
     parser.add_argument("--retune-ms",type=int,default=60)
@@ -281,7 +283,8 @@ def main():
     parser.add_argument("--threshold-cents",type=int,default=8)
     parser.add_argument("--compression",type=int,default=0)
     parser.add_argument("--highpass",type=int,default=0)
-    parser.add_argument("--character",choices=["Natural","Dulce","Rasgada","Cálida","Aireada"],default="Natural")
+    parser.add_argument("--character",type=lambda value:unicodedata.normalize("NFC",value),
+                        choices=["Natural","Dulce","Rasgada","Cálida","Aireada"],default="Natural")
     for name in ("character-amount","warmth","air","presence","deesser","gate","reverb"):
         parser.add_argument("--"+name,type=int,default=0)
     parser.add_argument("--wet",type=int,default=100)

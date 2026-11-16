@@ -41,8 +41,11 @@ def soundfont_locations(card):
     previous=getattr(card,"soundfont",None)
     if previous is not None and previous.parent.is_dir():
         dirs.append(previous.parent)
-    # No crear unidades fantasma: comprobar montajes y ficheros SF2 reales.
-    for base in (Path("/media")/Path.home().name, Path("/run/media")/Path.home().name):
+    # macOS monta discos en /Volumes; Linux conserva /media y /run/media.
+    import sys
+    bases=([Path("/Volumes")] if sys.platform=="darwin" else
+           [Path("/media")/Path.home().name,Path("/run/media")/Path.home().name])
+    for base in bases:
         if not base.is_dir():continue
         for mount in base.iterdir():
             if not mount.is_dir() or mount.is_symlink():continue
@@ -52,6 +55,12 @@ def soundfont_locations(card):
                     dirs.append(location)
     system=Path("/usr/share/sounds/sf2")
     if system.is_dir():dirs.append(system)
+    if sys.platform=="darwin":
+        dirs.extend(path for path in (
+            Path.home()/"Library"/"Audio"/"Sounds"/"Banks",
+            Path("/Library/Audio/Sounds/Banks"),
+            Path.home()/"Library"/"Application Support"/"StemMIDI Studio"/"soundfonts")
+            if path.is_dir())
     return list(dict.fromkeys(p.resolve() for p in dirs))
 
 def choose_soundfont(card):

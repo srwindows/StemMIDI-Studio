@@ -262,8 +262,16 @@ class ToolbarButton(QPushButton):
 
     def resizeEvent(self,event):
         super().resizeEvent(event)
-        self._symbol.setGeometry((self.width()-40)//2,6,40,47)
-        self._caption.setGeometry(0,55,self.width(),30)
+        if self.property('compactDrumHeader'):
+            self._symbol.setScaledContents(True)
+            self._symbol.setGeometry((self.width()-28)//2,2,28,29)
+            self._caption.setGeometry(0,31,self.width(),24)
+            self._caption.setStyleSheet('font-size:10px;font-weight:650;color:#e0f8ff;')
+        else:
+            self._symbol.setScaledContents(False)
+            self._symbol.setGeometry((self.width()-40)//2,6,40,47)
+            self._caption.setGeometry(0,55,self.width(),30)
+            self._caption.setStyleSheet('font-size:11px;font-weight:600;color:#e0f8ff;')
 
 class ProfessionalHelpButton(QPushButton):
     """Interruptor de ayuda: signo ? y LED real ON/OFF (no decorativo)."""
@@ -292,6 +300,23 @@ class ProfessionalHelpButton(QPushButton):
         self.update()
 
     def paintEvent(self,event):
+        if self.property('compactDrumHeader'):
+            p=QPainter(self)
+            p.setRenderHint(QPainter.Antialiasing,True)
+            p.setPen(QPen(QColor('#2d89b7'),1))
+            p.setBrush(QColor('#113f62') if self.isChecked() else QColor('#071f36'))
+            p.drawRoundedRect(self.rect().adjusted(2,2,-2,-2),5,5)
+            p.setPen(QPen(QColor('#64d7ff'),2))
+            p.drawEllipse((self.width()-29)//2,3,29,29)
+            font=QFont(self.font());font.setPixelSize(20);font.setBold(True)
+            p.setFont(font);p.setPen(QColor('#f5fdff'))
+            p.drawText(QRectF((self.width()-29)//2,2,29,29),Qt.AlignCenter,'?')
+            p.setBrush(QColor('#38ff8b') if self.isChecked() else QColor('#536879'))
+            p.setPen(Qt.NoPen);p.drawEllipse(self.width()-13,5,7,7)
+            font.setPixelSize(10);p.setFont(font);p.setPen(QColor('#e6f9ff'))
+            p.drawText(QRectF(0,35,self.width(),17),Qt.AlignCenter,
+                       'Ayuda ON' if self.isChecked() else 'Ayuda OFF')
+            p.end();return
         p=QPainter(self)
         p.setRenderHint(QPainter.Antialiasing,True)
         p.setPen(QPen(QColor("#2d89b7"),1))
@@ -412,7 +437,8 @@ class StudioHeader(QFrame):
         # Mantener accesibles los nuevos botones Proyecto y Biblioteca
         # incluso en pantallas pequeñas, sin solaparse con el título.
         width=self.width()
-        title_px=(29 if width<=1130 else
+        title_px=(22 if getattr(self,'drum_compact',False) else
+                  29 if width<=1130 else
                   34 if width<=1240 else
                   40 if width<=1380 else 49)
         desired_title=f"font-size:{title_px}px;font-weight:900;"
@@ -432,6 +458,13 @@ class StudioHeader(QFrame):
             btn.move(self.width()-111+37*i,7)
 
     def paintEvent(self,event):
+        if getattr(self,'drum_compact',False):
+            p=QPainter(self)
+            p.fillRect(self.rect(),QColor('#031426'))
+            p.setPen(QPen(QColor('#087bab'),1))
+            p.drawLine(0,self.height()-1,self.width(),self.height()-1)
+            p.end()
+            return
         p=QPainter(self)
         p.setRenderHint(QPainter.Antialiasing,True)
         w=float(self.width())
@@ -1120,7 +1153,7 @@ def close_project(main):
     main.studio_home.result_hint.setText(
         "Proyecto cerrado. Nuevo espacio vacío; ningún archivo anterior se ha eliminado.")
 
-def preferences(main,open_models=False):
+def preferences(main,open_models=False,model_family=None):
     dlg=QDialog(main)
     dlg.setWindowTitle("Preferencias · StemMIDI Studio")
     dlg.resize(1100,745)
@@ -1153,6 +1186,8 @@ def preferences(main,open_models=False):
     from model_manager import ModelManager
     models=ModelManager(main,tabs)
     tabs.addTab(models,"Modelos de IA")
+    if model_family and models.family.findText(model_family)>=0:
+        models.family.setCurrentText(model_family)
     if open_models:tabs.setCurrentIndex(1)
     footer=QHBoxLayout()
     footer.addStretch()
@@ -1589,6 +1624,21 @@ def install(main):
     from home_tab_sync import HomeTabSynchronizer
     main.home_tab_sync=HomeTabSynchronizer(main)
     home._tab_sync=main.home_tab_sync
+    # Contrato: toda vista de candado debe existir también en la pestaña
+    # profesional, reutilizando los mismos controles y motores.
+    from advanced_tab_parity import install as install_advanced_parity
+    install_advanced_parity(main)
+    # Audio→MIDI: eliminar barras anidadas con los controles reales intactos.
+    from midi_compact_workspace import install as install_midi_compact_workspace
+    install_midi_compact_workspace(main)
+    # Batería: superficie compacta sin paneles gigantes ni scroll ocultando
+    # controles. Reutiliza exactamente las señales y widgets existentes.
+    from drum_flat_workspace import install as install_drum_flat_workspace
+    install_drum_flat_workspace(main)
+    # Mantener los cinco paneles originales y corregir las etiquetas con
+    # sus controles: ondas, mezclador completo, editor, MIDI y resultados.
+    from drum_complete_workspace import install as install_drum_complete_workspace
+    install_drum_complete_workspace(main)
     # Un transporte MIDI persistente por encima de todos los módulos;
     # no sustituir ninguno de los reproductores que ya funcionan.
     from global_midi_transport import install as install_global_midi

@@ -6,7 +6,7 @@ from __future__ import annotations
 import json,os,re,shutil,unicodedata
 from uuid import uuid4
 from pathlib import Path
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
  QDialog,QVBoxLayout,QHBoxLayout,QLabel,QPushButton,QMessageBox,QFileDialog,
  QWidget,QFormLayout,QLineEdit,QComboBox,QInputDialog
@@ -38,6 +38,59 @@ def safe_project_root(folder):
 
 def project_directory(main):
     return Path(main.project_dir).resolve() if getattr(main,"project_dir",None) else None
+
+def _recording_folder_writable(folder):
+    """Comprobación física, no solo os.access(): NTFS puede ser solo lectura."""
+    folder=Path(folder).expanduser()
+    ancestor=folder
+    while not ancestor.exists() and ancestor!=ancestor.parent:
+        ancestor=ancestor.parent
+    try:
+        if os.statvfs(ancestor).f_flag & getattr(os,"ST_RDONLY",1):
+            return False
+        if folder.is_symlink():
+            return False
+        folder.mkdir(parents=True,exist_ok=True)
+        import tempfile
+        with tempfile.NamedTemporaryFile(prefix=".stemmidi_escritura_",
+                                         dir=folder) as probe:
+            probe.write(b"ok")
+            probe.flush()
+        return True
+    except (OSError,PermissionError,ValueError):
+        return False
+
+
+def recording_directory(project):
+    """(carpeta, externo): grabar incluso con proyecto en volumen NTFS RO.
+
+    Nunca modificar archivos del proyecto de solo lectura ni aparentar que
+    el destino alternativo forma parte de su manifiesto.
+    """
+    import hashlib
+    project=Path(project).expanduser().resolve()
+    requested=project/"temporales"/"grabaciones"
+    if _recording_folder_writable(requested):
+        return requested,False
+    # Identificar de forma estable el proyecto para no mezclar tomas con
+    # proyectos de nombre idéntico situados en discos distintos.
+    key=slug_name(project.name)[:48]+"_"+hashlib.sha256(
+        str(project).encode("utf-8")).hexdigest()[:10]
+    roots=[]
+    forced=os.environ.get("STEMMIDI_RECORDING_FALLBACK","").strip()
+    if forced:
+        roots.append(Path(forced).expanduser())
+    external=Path("/Volumes/trabajos")
+    if external.is_dir() and os.path.ismount(str(external)):
+        roots.append(external/"StemMIDI_Studio_Trabajo_Mac"/"Grabaciones_recuperadas")
+    roots.append(Path.home()/"Music"/"StemMIDI Studio"/"Grabaciones recuperadas")
+    for root in roots:
+        target=root/key
+        if _recording_folder_writable(target):
+            return target,True
+    raise OSError("El proyecto está en un disco de solo lectura y no existe "
+                  "una carpeta alternativa con permiso de escritura. "
+                  "Conecta el disco trabajos o elige un proyecto escribible.")
 
 def activate_directory(main,path,project_id,name):
     path=Path(path).resolve()
@@ -515,6 +568,11 @@ def add_approval_button(main):
     if getattr(results,"approve_button",None):return
     button=QPushButton("✓ Aprobar separación y distribuir stems")
     button.setObjectName("primary")
+    button.setProperty("allowStretch",True)
+    from PySide6.QtWidgets import QSizePolicy
+    button.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
+    button.setMaximumWidth(16777215)
+    button.setMinimumHeight(30)
     button.setToolTip(
         "Tras escuchar los stems, vincula Batería y Voces con sus módulos. "
         "No mueve ni modifica archivos.")
@@ -562,13 +620,11 @@ def startup(main):
     def choose_blank():
         state["choice"]="blank";box.accept()
     def choose_open():
-        from file_dialogs import get_open_file_name
-        source,_=get_open_file_name(box,"Abrir proyecto StemMIDI",
-                str(PROJECTS if PROJECTS.exists() else ROOT),
-                "Proyecto StemMIDI (*.stemstudio.json *.json)")
-        if source:
-            state["choice"]=source
-            box.accept()
+        # Cerrar primero el selector. En macOS, abrir otro QDialog.exec()
+        # dentro del modal inicial crea dos sesiones Cocoa anidadas y puede
+        # dejar el explorador detrás de la ventana que bloquea el foco.
+        state["choice"]="open_existing"
+        box.accept()
     a.clicked.connect(choose_blank)
     b.clicked.connect(choose_open)
     cancel.clicked.connect(box.reject)
@@ -579,9 +635,17 @@ def startup(main):
         if not new_project_dialog(main):
             # Volver al selector inicial, evitando registrar una sesión
             # sin nombre cuando se cancela la creación.
-            QTimer=__import__("PySide6.QtCore",fromlist=["QTimer"]).QTimer
             QTimer.singleShot(0,lambda:startup(main))
             return
-    elif state["choice"]:
-        from studio_shell import open_project
-        open_project(main,path=state["choice"])
+    elif state["choice"]=="open_existing":
+        # El modal de bienvenida ya ha terminado; el explorador se abre
+        # sin una sesión modal padre activa.
+        from file_dialogs import get_open_file_name
+        source,_=get_open_file_name(main,"Abrir proyecto StemMIDI",
+                str(PROJECTS if PROJECTS.exists() else ROOT),
+                "Proyecto StemMIDI (*.stemstudio.json *.json)")
+        if source:
+            from studio_shell import open_project
+            open_project(main,path=source)
+        else:
+            QTimer.singleShot(0,lambda:startup(main))

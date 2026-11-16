@@ -10,12 +10,12 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from studio_paths import workspace_root
+from studio_paths import workspace_root,ia_python
 
 ROOT=workspace_root(__file__)
 LIBRARY=ROOT/"modelos"/"audio_a_midi"
 MANIFEST=LIBRARY/"modelos_importados.json"
-PYTHON=ROOT/"entorno_ia"/"bin"/"python"
+PYTHON=ia_python(__file__)
 
 VALIDATOR=r'''
 import sys

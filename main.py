@@ -124,6 +124,9 @@ class MonitorWindow(QMainWindow):
         self.resize(1340, 860)
         self.setMinimumSize(970, 660)
         self.worker = None
+        # La captura del audio de salida de macOS se supervisa de forma
+        # automática al entrar en Monitor, pero Stop manual la respeta.
+        self._auto_monitor_suppressed = False
         self.recording = False
         self.record_pending = False
         self.record_started = None
@@ -207,9 +210,14 @@ class MonitorWindow(QMainWindow):
         self.show_mics = QCheckBox("Micrófonos / línea")
         self.show_mics.setToolTip("Incluir en la lista los micrófonos y entradas de línea, "
                                  "además de los monitores de audio del sistema.")
-        self.show_mics.setChecked(self.config.get("show_mics", False))
+        self.show_mics.setChecked(True if sys.platform=="darwin" else
+                                  self.config.get("show_mics", False))
         self.show_mics.toggled.connect(self.refresh_sources)
         sl.addWidget(self.show_mics)
+        if sys.platform=="darwin":
+            # Las entradas CoreAudio aparecen SIEMPRE, sin leer micrófonos
+            # ni solicitar permiso durante la enumeración.
+            self.show_mics.hide()
         self.source_note = lbl("Los monitores de salida capturan lo que reproduce el ordenador.", True)
         self.source_note.setWordWrap(True)
         sl.addWidget(self.source_note)
@@ -380,6 +388,7 @@ class MonitorWindow(QMainWindow):
         self._record_autosave.timeout.connect(self.save_config)
         self.format.currentIndexChanged.connect(lambda _:self._record_autosave.start())
         self.sources.currentIndexChanged.connect(lambda _:self._record_autosave.start())
+        self.sources.currentIndexChanged.connect(self._on_capture_source_selected)
         self.file_prefix.editingFinished.connect(self.save_config)
         self.folder_display.editingFinished.connect(self.save_config)
         self.show_mics.toggled.connect(lambda _:self._record_autosave.start())
@@ -422,7 +431,9 @@ class MonitorWindow(QMainWindow):
         foot = QHBoxLayout()
         foot.addWidget(lbl("Captura original protegida · Procesamiento no destructivo", True))
         foot.addStretch()
-        foot.addWidget(lbl("PipeWire · FFmpeg · 48 kHz", True))
+        backend=("CoreAudio" if sys.platform=="darwin" else
+                 "WASAPI" if sys.platform=="win32" else "PipeWire")
+        foot.addWidget(lbl(backend+" · FFmpeg · 48 kHz", True))
         root.addLayout(foot)
         root.setSpacing(4)
         root.setContentsMargins(7,5,7,5)
@@ -438,19 +449,37 @@ class MonitorWindow(QMainWindow):
         # de captura, detener el monitor SOLO si no hay grabación.
         AudioRoute.before_preview=self.stop_monitor_for_preview
         self.tabs.currentChanged.connect(self.on_workspace_tab_changed)
-        # Supervisión opt-in: la captura simultánea puede competir con
-        # la escucha o confundir las rutas de monitorización de PipeWire.
-        # La grabación sigue pudiendo iniciar la captura cuando se solicita.
+        # Linux/micrófonos mantienen supervisión opt-in. La fuente
+        # ScreenCaptureKit de macOS no comienza a enviar niveles hasta que
+        # se inicia el motor: arrancarla automáticamente en Inicio/Monitor.
         self.mode.setText("●  DETENIDO" if self.sources.count()
                           else "●  SIN FUENTES")
-        self.statusline.setText("Supervisión detenida. Pulsa Iniciar supervisión "
-                                "solo cuando quieras supervisar o grabar.")
+        self.statusline.setText("Preparando monitor de audio del sistema…" if
+             self.sources.currentData()=="macos:system-audio" else
+             "Supervisión detenida. Pulsa Iniciar supervisión para activarla.")
         from studio_shell import install
         install(self)
         from project_flow import add_approval_button
         add_approval_button(self)
+        from separation_review_ui import (install_review_scrolling,
+                                           install_separator_scrolling)
+        install_separator_scrolling(self.workbench.separator)
+        install_review_scrolling(self.workbench.sep_results)
+        from separation_sketch_layout import install as install_separation_sketch
+        install_separation_sketch(self)
+        from separation_advanced_tab import install as install_separation_advanced
+        install_separation_advanced(self)
+        from separation_final_layout import install as install_separation_final
+        install_separation_final(self)
+        from separation_professional_params import install as install_separation_params
+        install_separation_params(self)
+        QTimer.singleShot(120,self.workbench.separator._splitter_ratio_keeper.update)
         if __import__("os").environ.get("QT_QPA_PLATFORM")!="offscreen" and not __import__("os").environ.get("STEMMIDI_NO_STARTUP_DIALOG"):
-            QTimer.singleShot(0,lambda:__import__("project_flow").startup(self))
+            # Mostrar primero el asistente de IA (solo en la primera ejecución).
+            # El selector de proyectos no debe abrirse encima del instalador.
+            QTimer.singleShot(0,lambda:__import__("model_first_run").startup(
+                self,lambda:__import__("project_flow").startup(self)))
+        QTimer.singleShot(900,self.auto_start_system_monitor)
 
     @staticmethod
     def load_config():
@@ -502,6 +531,8 @@ class MonitorWindow(QMainWindow):
                                        __import__("project_flow").PROJECTS)),
             "show_mics": self.show_mics.isChecked(),
             "source": self.sources.currentData(),
+            "macos_system_audio_source_v1":bool(
+                self.config.get("macos_system_audio_source_v1",False)),
             "professional_help_enabled": bool(
                 getattr(getattr(self,"_context_help",None),"enabled",
                         self.config.get("professional_help_enabled",True))),
@@ -520,6 +551,15 @@ class MonitorWindow(QMainWindow):
             self.log("Detén la supervisión para actualizar las fuentes.")
             return
         selected = self.sources.currentData() or self.config.get("source") or default_monitor()
+        # Las versiones antiguas tomaban automáticamente el micrófono USB
+        # en macOS. Tras incorporar la captura real del audio del sistema,
+        # migrar UNA VEZ la fuente predeterminada; el usuario podrá volver
+        # a elegir un micro y el ajuste persistirá en siguientes arranques.
+        if sys.platform=="darwin" and not self.config.get("macos_system_audio_source_v1"):
+            from macos_system_audio import SYSTEM_AUDIO_SOURCE,system_audio_library
+            if system_audio_library() is not None:
+                selected=SYSTEM_AUDIO_SOURCE
+                self.config["macos_system_audio_source_v1"]=True
         self.sources.clear()
         try:
             sources = list_sources(self.show_mics.isChecked())
@@ -533,7 +573,15 @@ class MonitorWindow(QMainWindow):
             idx = self.sources.findData(default_monitor())
         if idx >= 0:
             self.sources.setCurrentIndex(idx)
-        self.statusline.setText(f"{len(sources)} fuentes disponibles. Selecciona la salida que está sonando.")
+        if sys.platform=="darwin":
+            message=(f"{len(sources)} fuentes CoreAudio disponibles. "
+                     "Para YouTube y la salida Roland, selecciona "
+                     "Audio del sistema; para voz o instrumentos, "
+                     "selecciona una entrada física.")
+        else:
+            message=(f"{len(sources)} fuentes disponibles. "
+                     "Selecciona la salida que está sonando.")
+        self.statusline.setText(message)
 
     def set_input_processing(self, gain_db=None, balance=None):
         """Actualiza captura y medidores; no ajusta el volumen de PipeWire."""
@@ -563,12 +611,68 @@ class MonitorWindow(QMainWindow):
             home.update_capture_diagnostics()
         self.save_config()
 
+    def _system_capture_permission_ready(self):
+        """Consulta el permiso TCC del proceso actual, sin pedirlo nunca.
+
+        No arrancar ScreenCaptureKit si macOS informa de un permiso denegado:
+        así se evitan avisos repetidos al abrir, cambiar módulo o pulsar REC.
+        """
+        if sys.platform!="darwin" or self.sources.currentData()!="macos:system-audio":
+            self._system_audio_permission_denied=False
+            return True
+        from macos_system_audio import system_audio_permission_granted
+        allowed=system_audio_permission_granted()
+        self._system_audio_permission_denied=not allowed
+        if not allowed:
+            message=("Audio del sistema: permiso no reconocido por macOS para "
+                     "esta versión. Puedes usar las entradas USB. Para YouTube, "
+                     "autoriza esta aplicación en Privacidad y reiníciala.")
+            self.statusline.setText(message)
+            self.mode.setText("● PERMISO DE AUDIO PENDIENTE")
+            if hasattr(self,"rec_hint"):
+                self.rec_hint.setText("Audio del sistema: autorización pendiente")
+            if not getattr(self,"_screen_permission_notice_logged",False):
+                self.log(message)
+                self._screen_permission_notice_logged=True
+        else:
+            self._screen_permission_notice_logged=False
+        return allowed
+
+    def _on_capture_source_selected(self,*_):
+        # Un cambio explícito a la fuente del sistema debe mostrar niveles
+        # inmediatamente. En el arranque, diferir hasta montar las tarjetas.
+        if self.sources.currentData()=="macos:system-audio":
+            self._auto_monitor_suppressed=False
+            QTimer.singleShot(120,self.auto_start_system_monitor)
+        else:
+            self._system_audio_permission_denied=False
+            self._screen_permission_notice_logged=False
+
+    def auto_start_system_monitor(self):
+        if (self._auto_monitor_suppressed or self.recording or
+                self.record_pending or not self.isVisible()):
+            return
+        if self.sources.currentData()!="macos:system-audio":
+            return
+        if self.worker is not None and self.worker.isRunning():
+            return
+        if not self._system_capture_permission_ready():
+            return
+        current=self.tabs.currentWidget()
+        if current not in (getattr(self,"studio_home",None),
+                           getattr(self,"monitor_page",None)):
+            return
+        self.start_monitor()
+        self.log("Supervisión automática del audio del sistema activada.")
+
     def start_monitor(self):
         if self.worker and self.worker.isRunning():
             return
         device = self.sources.currentData()
         if not device:
             QMessageBox.information(self, "Sin fuente", "No hay una fuente de audio seleccionada.")
+            return
+        if not self._system_capture_permission_ready():
             return
         self.worker = CaptureWorker(device, self, sample_rate=self.capture_rate.currentData())
         self.worker.set_input_controls(self.input_gain_db,self.input_balance)
@@ -615,8 +719,10 @@ class MonitorWindow(QMainWindow):
 
     def toggle_monitor(self):
         if self.worker and self.worker.isRunning():
+            self._auto_monitor_suppressed=True
             self.stop_monitor()
         else:
+            self._auto_monitor_suppressed=False
             self.start_monitor()
 
     def stop_monitor_for_preview(self):
@@ -631,6 +737,8 @@ class MonitorWindow(QMainWindow):
         if current not in (getattr(self,"monitor_page",None),
                            getattr(self,"studio_home",None)):
             self.stop_monitor_for_preview()
+        else:
+            QTimer.singleShot(140,self.auto_start_system_monitor)
 
     def select_folder(self):
         if getattr(self,"project_dir",None):
@@ -691,8 +799,10 @@ class MonitorWindow(QMainWindow):
         project=project_directory(self)
         if not project:
             raise ValueError("Crea un proyecto antes de grabar")
-        folder=project/"temporales"/"grabaciones"
-        folder.mkdir(parents=True,exist_ok=True)
+        from project_flow import recording_directory
+        folder,redirected=recording_directory(project)
+        self._recording_redirected=redirected
+        self._recording_destination=folder
         prefix=slug_name(self.file_prefix.text().strip() or self.project_name or "Grabacion")
         ext, _ = FORMAT_OPTIONS[self.format.currentText()]
         name = prefix + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -713,6 +823,8 @@ class MonitorWindow(QMainWindow):
             self.worker.request_stop_recording()
             return
         from project_flow import ensure_recording_project,slug_name
+        if not self._system_capture_permission_ready():
+            return
         if not ensure_recording_project(self):
             return
         # Cada grabación tiene nombre propio y no reemplaza tomas anteriores.
@@ -745,7 +857,11 @@ class MonitorWindow(QMainWindow):
         if self.worker.request_recording(file, self.format.currentText()):
             self.record_pending = True
             self.update_record_button()
-            self.rec_hint.setText("Preparando grabación…")
+            if getattr(self,"_recording_redirected",False):
+                self.rec_hint.setText("Grabando en trabajos: proyecto de solo lectura")
+                self.log("Proyecto de solo lectura; toma protegida en: "+str(file))
+            else:
+                self.rec_hint.setText("Preparando grabación…")
             self.save_config()
 
     def update_record_button(self):
@@ -771,7 +887,8 @@ class MonitorWindow(QMainWindow):
         if active:
             self.record_started = time.monotonic()
             self.current_output.setText(path)
-            self.rec_hint.setText("●  GRABANDO")
+            self.rec_hint.setText("● GRABANDO · destino externo" if
+                getattr(self,"_recording_redirected",False) else "●  GRABANDO")
             self.mode.setText("●  GRABANDO")
             self.log(f"Grabando: {path}")
         else:
@@ -786,17 +903,32 @@ class MonitorWindow(QMainWindow):
             self.record_preview.load(path)
             self.log(f"Guardado: {Path(path).name} ({message})")
             self.current_output.setText(f"Guardado: {path}")
-            try:
-                from project_flow import register_recording
-                register_recording(self,path)
-            except (OSError,ValueError) as exc:
-                self.log("Grabación guardada, pero el proyecto necesita revisión: "+str(exc))
-                QMessageBox.warning(self,"Proyecto no actualizado",
-                    "La grabación está guardada correctamente. No se pudo "
-                    "actualizar el proyecto: "+str(exc))
-            # Solo después de que el archivo original haya sido
-            # finalizado y registrado. NUNCA procesar la entrada cruda.
-            self.recording_lab.on_recording_finished(path,True)
+            if getattr(self,"_recording_redirected",False):
+                # El proyecto activo sigue siendo solo lectura: no mentir
+                # sobre la persistencia ni ejecutar efectos dentro de él.
+                if str(path) not in self.project_recordings:
+                    self.project_recordings.append(str(path))
+                self.rec_hint.setText("Toma guardada en disco alternativo")
+                self.current_output.setText("Guardada FUERA del proyecto: "+str(path))
+                self.log("RECUPERADA FUERA DEL PROYECTO: "+str(path))
+                self.log("El proyecto activo sigue en solo lectura; "
+                         "abre un proyecto escribible para guardar y procesar.")
+                self.studio_home.refresh(force=True)
+                # Previsualización disponible, pero no iniciar el
+                # procesamiento automático hacia el proyecto bloqueado.
+                try:self.recording_lab.set_source(path)
+                except (OSError,ValueError):pass
+            else:
+                try:
+                    from project_flow import register_recording
+                    register_recording(self,path)
+                except (OSError,ValueError) as exc:
+                    self.log("Grabación guardada, pero el proyecto necesita revisión: "+str(exc))
+                    QMessageBox.warning(self,"Proyecto no actualizado",
+                        "La grabación está guardada correctamente. No se pudo "
+                        "actualizar el proyecto: "+str(exc))
+                # Procesar solo después de finalizar el original.
+                self.recording_lab.on_recording_finished(path,True)
         else:
             self.log(f"ERROR: {message}")
             self.rec_hint.setText("Error al guardar")
@@ -804,6 +936,16 @@ class MonitorWindow(QMainWindow):
             QMessageBox.warning(self, "Grabación no completada", message)
 
     def on_capture_state(self, active, message):
+        # ScreenCaptureKit puede rechazar la identidad aun con un antiguo
+        # interruptor activado. No relanzar el capturador en bucle.
+        if (not active and self.sources.currentData()=="macos:system-audio"
+                and ("-3801" in str(message) or "TCC" in str(message))):
+            self._system_audio_permission_denied=True
+            self._auto_monitor_suppressed=True
+            message=("macOS ha denegado la captura del sistema a esta "
+                     "versión de StemMIDI. Vuelve a autorizar la instalación "
+                     "actual una vez y reinicia el programa. Puedes grabar "
+                     "mientras tanto desde una entrada USB.")
         self.statusline.setText(message)
         if not active:
             self.meter.set_levels(0,0,0,0)

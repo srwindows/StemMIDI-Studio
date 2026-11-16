@@ -1,6 +1,6 @@
 # StemMIDI Studio
 
-**Version 1.1.0 — Debian 13 — distribucion del codigo fuente**
+**Versión 2.0 — macOS Intel (x86_64) — distribución de la aplicación y del código fuente**
 
 Estudio modular de grabacion y produccion de audio y MIDI. Incluye Monitor,
 grabacion, separacion de stems con modelos opcionales, audio a MIDI, bateria,
@@ -25,15 +25,23 @@ recursos externos que **no estan incluidos** en esta distribucion.
 
 ## Instalar y ejecutar
 
-Ver [guia Debian 13](docs/INSTALACION_DEBIAN.md).
-Se necesita Python, PySide6, FFmpeg/FFplay, PipeWire/PulseAudio y bibliotecas
-de audio compatibles. Algunos modulos requieren SoundFonts o modelos
-opcionales adicionales.
+**macOS Intel, versión 2.0:** abre el archivo `.dmg`, copia
+`StemMIDI Studio.app` a Aplicaciones y ejecútala. El paquete lleva
+su propio entorno de ejecución, FFmpeg/FFplay y SoundFont GM.
+La primera vez permite elegir las IAs que se descargarán.
+El paquete no está notarizado por Apple; según la configuración de
+Gatekeeper puede requerir autorización manual en Privacidad y seguridad.
 
-**Windows y macOS no se presentan como sistemas validados.**
-Esta version se comprobo en Debian 13 con tests automatizados y validacion de
-ventanas. La latencia y escucha final en hardware fisico deben verificarse
-en cada instalacion.
+**Debian 13:** el código fuente y las instrucciones de la versión anterior
+siguen documentados en la [guía Debian 13](docs/INSTALACION_DEBIAN.md).
+La publicación 2.0 no se presenta como binario Debian actualizado.
+
+La versión 2.0 está destinada a **macOS Intel**. Se compila con Python y
+PyInstaller, incorporando sus bibliotecas y ejecutables de IA (sin los pesos
+externos, que se ofrecen al usuario en el primer inicio). La versión 1.1.0
+correspondía al código fuente de Debian 13. **La versión 3.0 para Windows
+se preparará por separado.** La captura y escucha en hardware físico deben
+comprobarse en cada equipo.
 
 ## Modelo entrenado compartido
 
@@ -76,5 +84,38 @@ que no forman parte de esta distribucion.
 - Los resultados de generacion musical necesitan revision antes de publicarse
   para no reproducir obras ajenas reconocibles.
 
-Este repositorio distribuye el **codigo fuente de la version 1.1.0**. No incluye actualmente
-una compilacion Windows .exe ni un instalador macOS .dmg verificados.
+**Versión 2.0 para macOS**: el código fuente y el paquete macOS se publican
+por separado; los modelos externos no se adjuntan al instalador.
+No se publica todavía la versión 3.0 destinada a Windows.
+
+
+## Instalación inicial de modelos de IA
+
+La distribución macOS ligera incorpora el motor de IA, el SoundFont GM y
+el catálogo, **pero no incluye los pesos de los modelos de terceros**.
+En un equipo nuevo, tras la intro, se abre un asistente que:
+
+1. Muestra los 11 modelos verificados que se utilizaban en el desarrollo,
+   distinguiendo los ya instalados y con tamaños medidos.
+2. Permite elegir qué IA instalar; recomienda un conjunto de seis,
+   sin iniciar descargas sin confirmación.
+3. Verifica los archivos descargados (tamaño y SHA-256) antes de moverlos
+   desde una carpeta temporal a la biblioteca.
+4. Una vez terminado, ofrece abrir el catálogo de modelos opcionales,
+   accesible en cualquier momento desde **Preferencias → Modelos de IA**.
+
+Se puede posponer la descarga y utilizar los módulos sin IA. Las IAs externas
+se descargan desde la fuente de sus autores, **no se redistribuyen desde
+este repositorio**. Los enlaces y huellas de los modelos iniciales se
+documentan en `first_run_models.json`; disponer de enlace de descarga no
+implica que exista permiso de redistribución ni uso comercial.
+
+En macOS, la biblioteca de modelos queda en
+`~/Library/Application Support/StemMIDI Studio/modelos/`, separada
+del ejecutable. No se borran modelos preexistentes. Un fallo de descarga
+deja intacta la biblioteca anterior.
+
+El empaquetado público macOS utiliza `StemMIDIStudio-macOS.spec` con
+`STEMMIDI_MAC_BUNDLE_ALL_MODELS=0` (valor predeterminado). La opción
+`=1` se reserva exclusivamente a pruebas locales con modelos que se tengan
+instalados: no debe utilizarse para generar una publicación pública.

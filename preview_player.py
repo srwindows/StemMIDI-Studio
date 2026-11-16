@@ -326,15 +326,23 @@ class PreviewPlayer(QFrame):
 
     def _apply_compact(self):
         extra=self._compact_expanded or not self._compact_active
-        for widget in (self.filename,self.volume_label,self.volume,
+        # Ocultar también el estado largo de la cabecera compacta: imponía
+        # casi 500px de anchura mínima y recortaba el conversor contiguo.
+        for widget in (self.filename,self.detail,self.volume_label,self.volume,
                        self.speed_label,self.speed,self.route_label,
                        self.device_choice,self.status):
             widget.setVisible(extra)
         self.options_button.setText("Opciones ▴" if extra else "Opciones ▾")
+        self.stop_button.setText("■ Stop" if self._compact_active and not extra else "■ Detener")
         self.slider.setMaximumWidth(420 if extra else 280)
         lay=self.layout()
-        lay.setContentsMargins(8,5,8,5) if self._compact_active and not extra else lay.setContentsMargins(15,12,15,13)
-        lay.setSpacing(3 if self._compact_active and not extra else 7)
+        compact=self._compact_active and not extra
+        lay.setContentsMargins(2,4,2,4) if compact else lay.setContentsMargins(15,12,15,13)
+        lay.setSpacing(3 if compact else 7)
+        # El transporte compacto conserva el slider, pero no 21px de huecos
+        # entre Play, Stop, posición y reloj en ventanas pequeñas.
+        controls=lay.itemAt(2).layout()
+        if controls is not None:controls.setSpacing(2 if compact else 7)
         self.updateGeometry()
 
     def refresh_output_devices(self):
@@ -641,7 +649,18 @@ class PreviewPlayer(QFrame):
         path = self._create_temp(".wav")
         self._prepared = None
         self.status.setText("Sintetizando MIDI para escuchar…")
-        self._launch_render("timidity", [str(self._origin), "-Ow", "-o", str(path)], path)
+        if sys.platform=="darwin":
+            from soundfont_catalog import system_soundfont
+            bank=system_soundfont()
+            if bank is None:
+                self.status.setText("No se encuentra el SoundFont General MIDI")
+                return
+            self._launch_render("fluidsynth",[
+                "-ni","-g","0.7","-r","44100","-F",str(path),
+                str(bank),str(self._origin)],path)
+        else:
+            self._launch_render("timidity",[
+                str(self._origin),"-Ow","-o",str(path)],path)
 
     def _launch_render(self, command, args, result):
         generation = self._generation

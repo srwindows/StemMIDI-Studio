@@ -167,7 +167,7 @@ class MidiAudioExpanded(QWidget):
         inst.addWidget(self.instrument_channel)
         self.bank=QComboBox(self.instrument_panel)
         self.bank.setObjectName("midiAudioSoundfont")
-        self.bank.addItem("Banco GM del sistema (TiMidity)",None)
+        self.bank.addItem("Banco General MIDI (FluidR3 integrado)",None)
         for label,path in (
             ("FluidR3 GM","/usr/share/sounds/sf2/FluidR3_GM.sf2"),
             ("TimGM 6 MB","/usr/share/sounds/sf2/TimGM6mb.sf2"),

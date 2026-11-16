@@ -87,9 +87,23 @@ class LiveMidiSynth(QObject):
 
     @staticmethod
     def _api():
-        library=ctypes.util.find_library('fluidsynth')
+        # En macOS autónomo y en el árbol de desarrollo no depender de que
+        # FluidSynth esté instalado globalmente: usar la biblioteca incluida.
+        import os
+        import sys
+        candidates=[]
+        explicit=os.environ.get("STEMMIDI_FLUIDSYNTH_LIB","").strip()
+        if explicit:candidates.append(Path(explicit).expanduser())
+        if sys.platform=="darwin":
+            from studio_paths import resource_root
+            candidates.extend((
+                resource_root(__file__)/"vendor/native/lib/libfluidsynth.dylib",
+                Path(__file__).resolve().parent.parent/"native/lib/libfluidsynth.dylib",
+            ))
+        library=next((str(p) for p in candidates if p.is_file()),None)
+        library=library or ctypes.util.find_library('fluidsynth')
         if not library:
-            raise RuntimeError("No se encuentra libfluidsynth")
+            raise RuntimeError("No se encuentra libfluidsynth; instala o incorpora la biblioteca nativa")
         lib=C.CDLL(library)
         ptr=C.c_void_p
         def bind(name,restype,args):
