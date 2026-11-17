@@ -154,6 +154,21 @@ def prepare_payload(root,payload):
     if isinstance(result.get("mixer_sources"),list):
         result["mixer_sources"]=[_copy_external(v,root) if isinstance(v,str) else v
                               for v in result["mixer_sources"]]
+    # Console's stored source paths must point to the files in the project,
+    # not to a temporary external file that disappears after a restart.
+    console=result.get("parameters_console_pro")
+    if isinstance(console,dict):
+        console=dict(console)
+        console["source_files"]=[
+            _copy_external(v,root) if isinstance(v,str) else v
+            for v in console.get("source_files",[])]
+        console["selected_files"]=[
+            _copy_external(v,root) if isinstance(v,str) else v
+            for v in console.get("selected_files",[])]
+        console["assignments"]={
+            str(k):_copy_external(v,root) if isinstance(v,str) else v
+            for k,v in console.get("assignments",{}).items()}
+        result["parameters_console_pro"]=console
     result["project_files"]=[path.relative_to(root).as_posix()
                              for path in _safe_files(root)]
     result["notice"]=("Proyecto autocontenido: medios originales importados "

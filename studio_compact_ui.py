@@ -76,6 +76,9 @@ def compact_recorder(main,card,layout):
     # El botón de opciones del reproductor pasa junto a Grabar, para
     # que la preescucha sea una sola fila y mantenga ruta/volumen accesibles.
     preview=main.record_preview
+    # Options belong in a modal editor, not in the 66px preview/VU widget.
+    # The inline rows were overlapping the meter on the user's Mac.
+    preview._compact_settings_popup=True
     transport_header=preview.layout().itemAt(0).layout()
     for j in range(transport_header.count()):
         widget=transport_header.itemAt(j).widget()

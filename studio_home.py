@@ -3114,7 +3114,7 @@ class StudioHome(QWidget):
             self.listen_processed.setChecked(False)
             self.listen_processed.setEnabled(False)
             self.listen_processed.setToolTip(
-                "La música ya sale por la salida de audio seleccionada. Reenviarla a otra salida "
+                "La música ya sale por el dispositivo elegido. Reenviarla a otra salida "
                 "crearía eco y realimentación al capturar audio del sistema.")
         else:
             self.listen_processed.setEnabled(True)

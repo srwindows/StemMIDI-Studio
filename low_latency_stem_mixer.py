@@ -22,7 +22,7 @@ from preview_player import AudioRoute
 
 RATE=48000
 BLOCK=512
-MAX_PENDING=12
+MAX_PENDING=24
 
 class _DummyStream:
     """Simulación sin salida física, solamente para pruebas del motor."""
@@ -53,6 +53,7 @@ class LowLatencyStemMixer(QObject):
         super().__init__(parent)
         self._decoder=None
         self._stream=None
+        self.native_output_error=""
         self._decode_thread=None
         self._done=threading.Event()
         self._eof=False
@@ -67,6 +68,12 @@ class LowLatencyStemMixer(QObject):
         self._paused=False
         self._running=False
         self.underruns=0
+        self.output_xruns=0
+        self.callback_overruns=0
+        self.callback_errors=0
+        self.last_callback_error=""
+        self.last_callback_ms=0.
+        self.max_callback_ms=0.
         self.blocks=0
         self.last_mix_level=0.0
         # Instantáneas atómicas calculadas sobre PCM REAL en el callback,
@@ -90,8 +97,12 @@ class LowLatencyStemMixer(QObject):
     @property
     def paused(self):return self._paused
     def position(self):
+        # En modo nativo _frames_played incluye bloques ya calculados
+        # pero aún pendientes en la cola de salida CoreAudio.
+        buffered=getattr(self._stream,"buffered_frames",0)
+        played=max(0,self._frames_played-buffered)
         return min(self._duration_ms,self._start_ms+
-                   round(self._frames_played*1000*self._playback_speed/RATE))
+                   round(played*1000*self._playback_speed/RATE))
 
     def _decode(self,proc,channels):
         size=BLOCK*channels*4
@@ -115,7 +126,7 @@ class LowLatencyStemMixer(QObject):
 
     def _callback(self,outdata,frames,timing,status):
         outdata.fill(0)
-        # CoreAudio/FANTOM requiere 4 canales a 48 kHz; mezclar solo L/R.
+        # CoreAudio/GM requiere 4 canales a 48 kHz; mezclar solo L/R.
         # El resto queda a cero, sin alterar los VU ni las ganancias.
         stereo=outdata[:,:2]
         if not self._running or self._paused:return
@@ -210,6 +221,12 @@ class LowLatencyStemMixer(QObject):
         self._paused=False
         self._eof=False
         self.underruns=0
+        self.output_xruns=0
+        self.callback_overruns=0
+        self.callback_errors=0
+        self.last_callback_error=""
+        self.last_callback_ms=0.
+        self.max_callback_ms=0.
         self.blocks=0
         self._queue=queue.Queue(maxsize=MAX_PENDING)
         self._done.clear()
@@ -227,10 +244,26 @@ class LowLatencyStemMixer(QObject):
             elif sys.platform in ("darwin","win32"):
                 from native_listen import resolve_qt_output
                 index,channels=resolve_qt_output(selected_sink,RATE)
-                self._stream=sd.OutputStream(
-                    samplerate=RATE,channels=channels,dtype="float32",
-                    blocksize=BLOCK,latency="low",device=index,
-                    callback=self._callback)
+                # Nueva ruta CoreAudio: el callback de salida es 100% C++.
+                # DSP/VST se ejecuta en un hilo productor fuera del render thread.
+                # Mantener PortAudio disponible para recuperación y comparación.
+                use_native=(sys.platform=="darwin" and
+                            os.environ.get("STEMMIDI_COREAUDIO_NATIVE","1")!="0")
+                self.native_output_error=""
+                if use_native:
+                    try:
+                        from native_coreaudio_stream import NativeCoreAudioStream
+                        device_name=str(sd.query_devices(index)["name"])
+                        self._stream=NativeCoreAudioStream(
+                            self._callback,device_name,channels,RATE,BLOCK)
+                    except Exception as native_error:
+                        self.native_output_error=str(native_error)
+                        self._stream=None
+                if self._stream is None:
+                    self._stream=sd.OutputStream(
+                        samplerate=RATE,channels=channels,dtype="float32",
+                        blocksize=BLOCK,latency="low",device=index,
+                        callback=self._callback)
             else:
                 # PulseAudio es una API Linux, nunca forzar device="pulse"
                 # en CoreAudio ni en WASAPI.
@@ -246,8 +279,26 @@ class LowLatencyStemMixer(QObject):
                     else:os.environ["PULSE_SINK"]=old_sink
             # Solo se acumulan ~128 ms de PCM SIN MEZCLAR.
             # El mute responde al siguiente bloque de 10.7 ms.
+            # Prebuffer de 64 ms: evita el primer underflow mientras
+            # FFmpeg abre el FLAC y crea sus primeros bloques PCM.
+            # Acotado: nunca atascar el transporte si falla el decodificador.
+            start_deadline=time.monotonic()+.65
+            while self._queue.qsize()<6 and not self._eof and time.monotonic()<start_deadline:
+                time.sleep(.004)
             self._running=True
-            self._stream.start()
+            try:
+                self._stream.start()
+            except Exception as stream_error:
+                from native_coreaudio_stream import NativeCoreAudioStream
+                if not isinstance(self._stream,NativeCoreAudioStream):
+                    raise
+                self.native_output_error=str(stream_error)
+                self._stream.close()
+                self._stream=sd.OutputStream(
+                    samplerate=RATE,channels=channels,dtype="float32",
+                    blocksize=BLOCK,latency="low",device=index,
+                    callback=self._callback)
+                self._stream.start()
             self.changed.emit()
             return True
         except Exception as exc:

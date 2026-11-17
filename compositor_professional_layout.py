@@ -117,6 +117,9 @@ def build(c):
     action("Transporte","Ir al inicio",lambda:c.set_playhead(0))
     action("Ver","Mostrar/ocultar archivos",c.toggle_library)
     action("Ver","Mostrar/ocultar inspector",c.toggle_inspector)
+    from composer_advanced_mixer import open_console_for_composer
+    action("Ver","Consola profesional flotante…",
+           lambda:open_console_for_composer(c))
 
     # 2. Cabecera legible y transporte principal.
     heading=QHBoxLayout()
@@ -166,6 +169,12 @@ def build(c):
     transport.addWidget(c._button("⊕ Pista",lambda:c.create_empty_track("audio"),
                                   "Crear pista de audio vacía"))
     transport.addWidget(c._button("Importar",c.import_media))
+    c.pro_mixer_button=c._button(
+        "Consola profesional",
+        lambda:open_console_for_composer(c),
+        "Abrir el mezclador avanzado en una ventana independiente y redimensionable")
+    c.pro_mixer_button.setObjectName("composerPrimary")
+    transport.addWidget(c.pro_mixer_button)
     transport.addStretch()
     transport.addWidget(QLabel("Ajuste"))
     c.grid=QComboBox(c)

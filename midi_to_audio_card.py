@@ -7,6 +7,7 @@ Los resultados se publican primero en temporales/resultados hasta Guardar.
 from __future__ import annotations
 
 import os
+import json
 import tempfile
 from pathlib import Path
 

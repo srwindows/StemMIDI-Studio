@@ -26,7 +26,7 @@ def get_sources(include_mics=False):
         from macos_system_audio import (SYSTEM_AUDIO_SOURCE,
                                         system_audio_library,system_output_name)
         if system_audio_library() is not None:
-            # La salida FANTOM no devuelve por USB la mezcla que recibe.
+            # La salida GM no devuelve por USB la mezcla que recibe.
             # ScreenCaptureKit sí captura YouTube sin cambiar de salida.
             destination=system_output_name()
             result.append({"name":SYSTEM_AUDIO_SOURCE,

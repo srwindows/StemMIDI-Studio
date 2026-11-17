@@ -63,7 +63,7 @@ def is_feedback_route(source,sink):
     source,sink=str(source),str(sink)
     # ScreenCaptureKit ya escucha la mezcla general del Mac. Volver a
     # reproducir el PCM tratado en cualquier salida del sistema produciría
-    # eco/realimentación (también con interfaz USB como salida USB).
+    # eco/realimentación (también con interfaz MIDI USB como salida USB).
     if source=="macos:system-audio":
         return True
     if source.endswith(".monitor") and source[:-len(".monitor")]==sink:

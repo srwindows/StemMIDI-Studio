@@ -24,7 +24,6 @@ def load_model():
     if workspace:
         roots.append(Path(workspace))
     roots.append(Path(__file__).resolve().parent)
-    roots.append(Path(__file__).resolve().parent.parent)
     for relative,expected_type,expected_distribution in (
         (PRIVATE_RELATIVE,"user_supplied_private_symbolic_markov_v1",
                           "PRIVATE_NOT_FOR_PUBLIC_RELEASE"),

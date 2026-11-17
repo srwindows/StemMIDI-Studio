@@ -537,10 +537,11 @@ class ExpandedModule:
             self.extra.setMinimumHeight(0)
             self.layout.setSpacing(3)
         elif self.kind=="mixer":
-            # Mezclador verdadero por ARCHIVO, no por una lista de nombres.
-            # Sin presets, botones duplicados ni preescucha individual.
-            from project_mixer_expanded import ProjectMixerView
-            self.project_mixer=ProjectMixerView(h,self.extra)
+            # Restaurar la consola profesional completa existente.
+            # Nunca sustituirla por la mesa simplificada de siete faders.
+            from studio_pro_console import StudioProConsole
+            self.project_mixer=StudioProConsole(h,self.extra)
+            self.floating_mixer=None
             self.layout.addWidget(self.project_mixer,1)
             self.layout.itemAt(0).widget().hide()  # título redundante
             self.status.hide()
@@ -924,7 +925,10 @@ class ExpandedModule:
                 self.status.setText(f"{active} pistas reales disponibles")
                 self.details.setText("Solo y Mute siguen operativos en las pistas originales.")
             elif self.kind=="mixer":
-                self.project_mixer.refresh_catalog()
+                if self.floating_mixer is not None and self.floating_mixer.isVisible():
+                    self.floating_mixer.refresh_catalog()
+                else:
+                    self.project_mixer.refresh_catalog()
             elif self.kind=="drum_stems":
                 active=sum(bool(v["path"] and v["path"].is_file()) for v in h.drum_stem_rows.values())
                 self.status.setText(f"{active} piezas de batería disponibles")
@@ -1273,8 +1277,22 @@ class ExpandedModule:
         if self.kind=="mixer":
             bridge=getattr(self,"professional_bridge",None)
             if bridge is not None:bridge.to_floating()
+            # Un único mezclador profesional, como en la captura de referencia.
+            # Ocultar la mesa compacta de Inicio mientras está flotante.
             self._toggle_mixer_original(True)
+            # Los antiguos huecos elásticos permanecían en la tarjeta al
+            # flotar y comprimían el mezclador, dejando media ventana vacía.
+            inner=self.card.inner
+            self._mixer_floating_stretches=[inner.stretch(i)
+                                            for i in range(inner.count())]
+            for i in range(inner.count()):
+                item=inner.itemAt(i)
+                inner.setStretch(i,1 if item.widget() is self.extra else 0)
+            self.extra.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Expanding)
+            # La MISMA consola de 16 canales se ha trasladado desde la
+            # pestaña. Su transporte va dentro, no se crea otro mezclador.
             self.project_mixer.reopen()
+            self.project_mixer.show()
         if self.kind=="piano":
             self.home.piano_navigation.show()
             self.home.piano_pitch_scroll.show()
@@ -1331,6 +1349,16 @@ class ExpandedModule:
             self.home.piano_pitch_scroll.hide()
         if self.kind=="mixer":
             self._toggle_mixer_original(False)
+            inner=self.card.inner
+            for i,stretch in enumerate(
+                    getattr(self,"_mixer_floating_stretches",())):
+                if i<inner.count():inner.setStretch(i,stretch)
+            self._mixer_floating_stretches=[]
+            if self.floating_mixer is not None:
+                # Devolver niveles, mute y selección al mezclador de la pestaña.
+                self.floating_mixer.push_to_professional()
+                self.floating_mixer.cleanup()
+                self.floating_mixer.hide()
             bridge=getattr(self,"professional_bridge",None)
             if bridge is not None:bridge.to_tab()
         if self.kind=="info":

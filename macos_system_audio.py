@@ -1,7 +1,7 @@
 """Captura nativa del audio de macOS y entradas USB.
 
 En Sonoma, ScreenCaptureKit puede leer el audio del sistema, incluido el
-sonido de YouTube enviado a interfaz de audio USB, sin usar el bus de entrada del
+sonido de YouTube enviado a interfaz MIDI USB, sin usar el bus de entrada del
 instrumento. No altera la salida predeterminada del Mac.
 """
 from __future__ import annotations
@@ -143,6 +143,26 @@ def _legacy_external_capture_unused(stop_event,rate=48000,frames=4096):
                 if pipe is not None:
                     try:pipe.close()
                     except OSError:pass
+
+
+def request_system_audio_permission():
+    """Ask macOS permission ONCE per explicit user action, not on launch.
+
+    This is the real CoreGraphics screen/system-audio permission prompt.
+    macOS retains full authority; we never modify/reset TCC ourselves.
+    """
+    if sys.platform!="darwin":
+        return False
+    try:
+        import ctypes
+        cg=ctypes.CDLL(
+            "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+        request=cg.CGRequestScreenCaptureAccess
+        request.argtypes=()
+        request.restype=ctypes.c_bool
+        return bool(request())
+    except (OSError,AttributeError):
+        return False
 
 
 def system_audio_permission_granted():

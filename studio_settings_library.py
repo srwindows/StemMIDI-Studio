@@ -45,6 +45,11 @@ def capture_settings(main):
                             for name,parts in home.mixer_rows.items()}},
         "home":{"stem_visibility":dict(home._stem_selection)},
     }
+    # Sólo parámetros de instrumentos, sin rutas de archivos privados.
+    dock=getattr(main,"mixer_professional",None)
+    view=getattr(dock,"view",None)
+    if view is not None and hasattr(view,"midi_instrument_snapshot"):
+        config["mixer"]["midi_instruments"]=view.midi_instrument_snapshot()
     # Asegurar que todos los perfiles son JSON puro, sin objetos Qt o Path.
     json.dumps(config,ensure_ascii=False,allow_nan=False)
     return config
@@ -75,6 +80,10 @@ def apply_settings(main,settings,category=None):
                 if name in home.mixer_rows:
                     fader=home.mixer_rows[name]["fader"]
                     fader.setValue(max(fader.minimum(),min(fader.maximum(),int(value))))
+        dock=getattr(main,"mixer_professional",None)
+        view=getattr(dock,"view",None)
+        if view is not None and hasattr(view,"apply_midi_instruments"):
+            view.apply_midi_instruments(data.get("midi_instruments",{}))
     if (data:=part("home")) is not None:
         selected=data.get("stem_visibility")
         if isinstance(selected,dict):

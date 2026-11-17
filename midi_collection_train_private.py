@@ -282,7 +282,7 @@ def main(max_songs=0):
         'type':'user_supplied_private_symbolic_markov_v1',
         'distribution':'PRIVATE_NOT_FOR_PUBLIC_RELEASE',
         'genre_labels_verified':False,
-        'style_conditioning':'GM rhythm resemblance ONLY; not music genre',
+        'style_conditioning':'General MIDI rhythm resemblance ONLY; not music genre',
         'notes_or_lyrics_stored':False,
         'training_metrics':dict(metrics),
         'profiles':{scope:_serialize(learned)

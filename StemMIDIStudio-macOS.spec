@@ -31,7 +31,7 @@ if not SDL3_LOADER.is_file():
     raise SystemExit('ERROR: falta SDL3 requerida por ffplay: '+str(SDL3_LOADER))
 NATIVE_DATA.append((str(SDL3_LOADER),'vendor/native/bin'))
 # Captura del audio de macOS vía ScreenCaptureKit: evita depender de
-# BlackHole ni depender del retorno USB de una interfaz externa.
+# BlackHole o de que General MIDI devuelva el sonido de YouTube por USB.
 SCK_AUDIO_CAPTURE=NATIVE_BIN/'stemmidi-system-audio'
 if not SCK_AUDIO_CAPTURE.is_file():
     raise SystemExit('ERROR: falta motor ScreenCaptureKit: '+str(SCK_AUDIO_CAPTURE))
@@ -49,8 +49,7 @@ AI_CLI=IA_RUNTIME/'bin'/'audio-separator'
 AI_MODELS=PORTABLE_ROOT/'ai_models'
 SOUNDFONT=PORTABLE_ROOT/'soundfonts'/'FluidR3_GM.sf2'
 SOUNDFONT_LICENSE=PORTABLE_ROOT/'soundfonts'/'FluidR3_GM_LICENSE.txt'
-# Paquete público ligero: solo metadatos. Los pesos se descargan a petición.
-BUNDLED_METADATA=('download_checks.json','catalogo_audio_separator.json')
+BUNDLED_MODELS=('htdemucs.yaml','955717e8-8726e21a.th','download_checks.json','catalogo_audio_separator.json')
 # Perfil LOCAL autónomo: incorpora todos los modelos libres descargados para
 # verificación en este Mac. NO se activa en paquetes públicos ni en GitHub:
 # cada autor externo mantiene sus condiciones de redistribución.
@@ -74,12 +73,12 @@ LOCAL_BUNDLED_MODELS={
 
 missing=[str(p) for p in (AI_PYTHON,AI_CLI,IA_RUNTIME/'bin'/'python-ia',SOUNDFONT,SOUNDFONT_LICENSE)
          if not p.is_file()]
-missing += [str(AI_MODELS/name) for name in BUNDLED_METADATA
+missing += [str(AI_MODELS/name) for name in BUNDLED_MODELS
             if not (AI_MODELS/name).is_file()]
 if missing:
     raise SystemExit('ERROR: distribución autónoma incompleta: '+', '.join(missing))
-# Se incluyen motores de IA, SoundFont y metadatos, pero NO pesos externos
-# ni bibliotecas personales, archivos MIDI/KAR ni los ritmos privados.
+# Se incluyen los paquetes de IA y modelos públicos; nunca las bibliotecas
+# personales, archivos MIDI/KAR ni los 59 ritmos privados del usuario.
 LOCAL_MODEL_DATA=[]
 if LOCAL_FULL_MODELS:
     for group,names in LOCAL_BUNDLED_MODELS.items():
@@ -92,7 +91,7 @@ if LOCAL_FULL_MODELS:
                 'ai_models/'+group if group else 'ai_models'))
 PORTABLE_DATA=[
     (str(IA_RUNTIME),'ia_runtime'),
-    *[(str(AI_MODELS/name),'ai_models') for name in BUNDLED_METADATA],
+    (str(AI_MODELS),'ai_models'),
     *LOCAL_MODEL_DATA,
     (str(SOUNDFONT),'soundfonts'),
     (str(SOUNDFONT_LICENSE),'licenses'),
@@ -110,15 +109,12 @@ a = Analysis(
         (str(ROOT/'assets'),'assets'),
         (str(INTRO_FILE),'intro'),
         (str(ROOT/'LICENSE'),'.'),
-        (str(ROOT/'first_run_models.json'),'.'),
         (str(ROOT/'README.md'),'.'),
         (str(ROOT/'composition_learned_model.json'),'.'),
-        (str(ROOT/'stemmidi_drum_ai_trained_v1.json'),'.'),
-        (str(ROOT/'genre_rhythm_trained_gm_v1.json'),'.'),
         (str(ROOT/'modelos_publicos/multinstrumental_markov_v1.json'),
          'modelos_publicos'),
     ],
-    hiddenimports=['soundcard','psutil','mutagen','pydub','audioop','PySide6.QtNetwork','PySide6.QtSvgWidgets','scipy.signal','scipy.ndimage','compositor_session', 'compositor_render', 'compositor_tab', 'compositor_professional_layout', 'compositor_preview_shapes', 'compositor_meters', 'studio_vu_unified', 'home_vocal_studio', 'home_workspace', 'studio_shared_tabs', 'results_dragdrop', 'capture_eq', 'capture_live_listen', 'vocal_preset_catalog', 'composition_learned', 'drum_ai_generator', 'drum_style_catalog', 'genre_rhythm_trained', 'composition_style_library', 'composition_registers', 'composition_ligatures', 'composition_pedal', 'composition_personal_learned', 'studio_home', 'studio_shell', 'home_tab_sync', 'project_transaction', 'project_progress', 'engine_task_indicator', 'result_file_details', 'global_midi_transport', 'midi_to_audio_card', 'midi_to_audio_expanded', 'midi_to_audio_engine_options', 'midi_render_instrument', 'midi_adsr_envelope', 'midi_compact_vu', 'midi_live_synth', 'midi_offline_render', 'soundfont_catalog', 'midi_gm_programs', 'midi_quant_render', 'home_fit_view', 'safe_file_delete', 'studio_paths', 'intro_video', 'PySide6.QtMultimedia', 'PySide6.QtMultimediaWidgets', 'PySide6.QtSvg', 'native_capture', 'workspace_ui', 'midi_dialog', 'midi_factory_presets', 'piano_roll', 'separador', 'mezclador', 'task_staging', 'drum_module', 'drum_expert_controls', 'drum_flat_workspace', 'midi_compact_workspace', 'drum_complete_workspace', 'drum_custom_models', 'audio_import_gui', 'audio_import', 'vocal_tune_module', 'file_dialogs', 'studio_file_browser', 'ui_polish', 'ui_hover_help', 'professional_help_content', 'recording_lab', 'recording_lab_engine', 'preview_player', 'help_center', 'drum_studio', 'drum_mixer_console', 'studio_slider_spin', 'studio_compact_ui', 'studio_workspace_cards', 'separation_compact_ui', 'separation_pro_controls', 'separation_dashboard_layout', 'separation_extended_ui', 'separation_sketch_layout', 'separation_advanced_tab', 'separation_final_layout', 'separation_engine_parameters', 'separation_professional_params', 'advanced_tab_parity', 'home_floating_cards', 'home_separation_expanded', 'home_other_expanded', 'studio_transport', 'playback_vu', 'home_record_review', 'dialog_guard', 'floating_transport', 'home_midi_browser', 'midi_stem_listen', 'live_stem_mixer', 'low_latency_stem_mixer', 'vocal_catalog', 'sounddevice', 'vocal_split_stems', 'model_registry', 'model_manager', 'model_first_run', 'external_model_import', 'project_flow', 'studio_settings_library', 'project_layout', 'project_status_dialog', 'export_dialog', 'project_session'],
+    hiddenimports=['soundcard','psutil','mutagen','pydub','audioop','PySide6.QtNetwork','PySide6.QtSvgWidgets','scipy.signal','scipy.ndimage','compositor_session', 'compositor_render', 'compositor_tab', 'compositor_professional_layout', 'compositor_preview_shapes', 'compositor_meters', 'studio_vu_unified', 'home_vocal_studio', 'home_workspace', 'studio_shared_tabs', 'results_dragdrop', 'capture_eq', 'capture_live_listen', 'vocal_preset_catalog', 'composition_learned', 'composition_style_library', 'composition_registers', 'composition_ligatures', 'composition_pedal', 'composition_personal_learned', 'studio_home', 'studio_shell', 'home_tab_sync', 'project_transaction', 'project_progress', 'engine_task_indicator', 'result_file_details', 'global_midi_transport', 'midi_to_audio_card', 'midi_to_audio_expanded', 'midi_to_audio_engine_options', 'midi_render_instrument', 'midi_adsr_envelope', 'midi_compact_vu', 'midi_live_synth', 'midi_offline_render', 'soundfont_catalog', 'midi_gm_programs', 'midi_quant_render', 'home_fit_view', 'safe_file_delete', 'studio_paths', 'intro_video', 'PySide6.QtMultimedia', 'PySide6.QtMultimediaWidgets', 'PySide6.QtSvg', 'native_capture', 'workspace_ui', 'midi_dialog', 'midi_factory_presets', 'piano_roll', 'separador', 'mezclador', 'task_staging', 'drum_module', 'drum_expert_controls', 'drum_flat_workspace', 'midi_compact_workspace', 'drum_complete_workspace', 'drum_custom_models', 'audio_import_gui', 'audio_import', 'vocal_tune_module', 'file_dialogs', 'studio_file_browser', 'ui_polish', 'ui_hover_help', 'professional_help_content', 'recording_lab', 'recording_lab_engine', 'preview_player', 'help_center', 'drum_studio', 'drum_mixer_console', 'studio_slider_spin', 'studio_compact_ui', 'studio_workspace_cards', 'separation_compact_ui', 'separation_pro_controls', 'separation_dashboard_layout', 'separation_extended_ui', 'separation_sketch_layout', 'separation_advanced_tab', 'separation_final_layout', 'separation_engine_parameters', 'separation_professional_params', 'advanced_tab_parity', 'home_floating_cards', 'home_separation_expanded', 'home_other_expanded', 'studio_transport', 'playback_vu', 'home_record_review', 'dialog_guard', 'floating_transport', 'home_midi_browser', 'midi_stem_listen', 'live_stem_mixer', 'low_latency_stem_mixer', 'vocal_catalog', 'sounddevice', 'vocal_split_stems', 'model_registry', 'model_manager', 'external_model_import', 'project_flow', 'studio_settings_library', 'project_layout', 'project_status_dialog', 'export_dialog', 'project_session'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[str(ROOT/'macos_runtime_hook.py')],
@@ -162,11 +158,11 @@ app = BUNDLE(
     icon=str(ROOT/'assets'/'stemmidi_icon.icns'),
     bundle_identifier='com.srwindows.stemmidi-studio',
     info_plist={
-        'CFBundleShortVersionString': '2.0.0',
-        'CFBundleVersion': '2.0.0',
+        'CFBundleShortVersionString': '1.1.0',
+        'CFBundleVersion': '1.1.0',
         'LSMinimumSystemVersion': '14.0',
         'NSMicrophoneUsageDescription': 'StemMIDI Studio necesita acceso a las entradas de audio para monitorizar y grabar cuando usted lo solicite.',
-        'NSScreenCaptureUsageDescription': 'StemMIDI Studio captura el audio de salida de macOS, por ejemplo música reproduciéndose por una interfaz de audio, solo cuando activa Monitor o Grabar.',
+        'NSScreenCaptureUsageDescription': 'StemMIDI Studio captura el audio de salida de macOS, por ejemplo YouTube reproduciéndose por interfaz MIDI USB, solo cuando activa Monitor o Grabar.',
         'NSHighResolutionCapable': True,
     },
 )

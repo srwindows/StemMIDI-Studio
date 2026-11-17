@@ -57,8 +57,9 @@ def install(project):
     """Crear una sola vez subcarpetas fijas, sin tocar medios ya existentes."""
     root=Path(project).expanduser().resolve()
     root.mkdir(parents=True,exist_ok=True)
-    for name in ("temporales",):
+    for name in DIRECTORIES:
         child=root/name
+        # Nunca seguir enlaces ni sobrescribir archivos ya existentes.
         if child.is_symlink():
             raise ValueError("Carpeta del proyecto es un enlace: "+str(child))
         child.mkdir(exist_ok=True)

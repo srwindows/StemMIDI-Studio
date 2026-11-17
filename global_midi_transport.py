@@ -358,4 +358,12 @@ def install(main):
     bar=GlobalMidiTransport(main)
     layout.addWidget(bar,0)
     main.studio_midi_transport=bar
+    def _show_for_tab(*_):
+        current=main.tabs.currentWidget()
+        visible=current is not getattr(main,"mixer_placeholder",None)
+        if not visible and (bar.preview._qt_active or bar.preview._render is not None):
+            bar.stop()
+        bar.setVisible(visible)
+    main.tabs.currentChanged.connect(_show_for_tab)
+    _show_for_tab()
     return bar

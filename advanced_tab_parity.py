@@ -112,6 +112,18 @@ class SharedAdvancedTab:
                 widget.show()
                 self.monitor_extras.append((widget,source,index))
         self.to_tab()
+        if kind in ('monitor','wave'):
+            # Small monitor view has ONE scroll container, at page level.
+            # The full advanced host was consuming 240+225 px by default,
+            # pushing the recorder out of view and leaving 2/3 scrollbars.
+            # Keep all real widgets, but collapse the two optional areas.
+            self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self.scroll.setMinimumHeight(0)
+            self.scroll.setMaximumHeight(16777215)
+            self.scroll.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
+            self.scroll.hide()
+            self.toggle.setText("Mostrar controles adicionales ▾")
         if kind=='drum_stems':
             # La selección principal con 6 pistas ya está en la sección
             # anterior: conservar el panel complementario (y la línea
@@ -160,7 +172,15 @@ class SharedAdvancedTab:
     def toggle_visible(self):
         content=self.drum_direct if self.kind=='drums' else self.scroll
         visible=not content.isVisible()
+        if visible and self.kind in ('monitor','wave'):
+            # Let the PAGE's single scrollbar cover all advanced controls;
+            # do not nest another scrolling viewport inside the monitor.
+            self.scroll.setFixedHeight(max(90,self.content.sizeHint().height()+12))
         content.setVisible(visible)
+        if visible and self.kind in ('monitor','wave'):
+            QTimer.singleShot(0,lambda:
+                self.scroll.setFixedHeight(max(90,self.content.sizeHint().height()+12))
+                if self.scroll.isVisible() else None)
         self.toggle.setText('Ocultar ▴' if visible else 'Mostrar ▾')
 
     def to_floating(self):
@@ -358,6 +378,12 @@ def install(main):
 
     def sync(index):
         widget=main.tabs.widget(index)
+        if widget is main.monitor_page:
+            # A previous advanced scroll offset must never reopen Monitor
+            # halfway down the recorder with top controls hidden.
+            scroller=getattr(main.monitor_page,"_advanced_parity_scroller",None)
+            if scroller is not None:
+                QTimer.singleShot(0,lambda:scroller.verticalScrollBar().setValue(0))
         for bridge in bridges.values():
             if widget is bridge.tab and bridge.docked:
                 bridge.activate()

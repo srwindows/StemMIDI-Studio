@@ -266,7 +266,7 @@ def melodic_phrase(tpb,root=0,scale="Mayor",bars=4,density=75,octave=4,
         phrase=b//4;position=b%4
         if phrase not in patterns:
             patterns[phrase]=make_rhythm(rng,slots,effective_density,style,phrase*4)
-        # Para estilos con base rítmica personal, conservar el carácter del motivo
+        # Para estilos con base rítmica privada, conservar el carácter del motivo
         # pero dejar que cada compás siga la acentuación real de su patrón.
         rhythm=(make_rhythm(rng,slots,effective_density,style,b)
                 if style is not None else patterns[phrase][:])

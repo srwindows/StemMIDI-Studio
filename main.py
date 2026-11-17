@@ -4,6 +4,7 @@ from __future__ import annotations
 import file_dialogs
 
 import json
+import os
 import re
 import sys
 import time
@@ -127,6 +128,7 @@ class MonitorWindow(QMainWindow):
         # La captura del audio de salida de macOS se supervisa de forma
         # automática al entrar en Monitor, pero Stop manual la respeta.
         self._auto_monitor_suppressed = False
+        self._screen_audio_permission_requested_this_run=False
         self.recording = False
         self.record_pending = False
         self.record_started = None
@@ -473,12 +475,11 @@ class MonitorWindow(QMainWindow):
         install_separation_final(self)
         from separation_professional_params import install as install_separation_params
         install_separation_params(self)
+        from separation_guitar_studio import install as install_guitar_studio
+        install_guitar_studio(self)
         QTimer.singleShot(120,self.workbench.separator._splitter_ratio_keeper.update)
         if __import__("os").environ.get("QT_QPA_PLATFORM")!="offscreen" and not __import__("os").environ.get("STEMMIDI_NO_STARTUP_DIALOG"):
-            # Mostrar primero el asistente de IA (solo en la primera ejecución).
-            # El selector de proyectos no debe abrirse encima del instalador.
-            QTimer.singleShot(0,lambda:__import__("model_first_run").startup(
-                self,lambda:__import__("project_flow").startup(self)))
+            QTimer.singleShot(0,lambda:__import__("project_flow").startup(self))
         QTimer.singleShot(900,self.auto_start_system_monitor)
 
     @staticmethod
@@ -575,9 +576,9 @@ class MonitorWindow(QMainWindow):
             self.sources.setCurrentIndex(idx)
         if sys.platform=="darwin":
             message=(f"{len(sources)} fuentes CoreAudio disponibles. "
-                     "Para audio del sistema, selecciona "
-                     "Audio del sistema; para voz o instrumentos, "
-                     "selecciona una entrada física.")
+                     "Para grabar lo que suena por la salida del Mac, "
+                     "selecciona Audio del sistema; para una entrada "
+                     "física, selecciona el dispositivo correspondiente.")
         else:
             message=(f"{len(sources)} fuentes disponibles. "
                      "Selecciona la salida que está sonando.")
@@ -611,7 +612,7 @@ class MonitorWindow(QMainWindow):
             home.update_capture_diagnostics()
         self.save_config()
 
-    def _system_capture_permission_ready(self):
+    def _system_capture_permission_ready(self,request=False):
         """Consulta el permiso TCC del proceso actual, sin pedirlo nunca.
 
         No arrancar ScreenCaptureKit si macOS informa de un permiso denegado:
@@ -622,11 +623,25 @@ class MonitorWindow(QMainWindow):
             return True
         from macos_system_audio import system_audio_permission_granted
         allowed=system_audio_permission_granted()
+        if (not allowed and request and
+                not self._screen_audio_permission_requested_this_run):
+            # Only a click on Monitor or REC can open macOS's native prompt.
+            # The passive startup monitor must never spam authorization.
+            self._screen_audio_permission_requested_this_run=True
+            from macos_system_audio import request_system_audio_permission
+            requested=bool(request_system_audio_permission())
+            allowed=requested or system_audio_permission_granted()
         self._system_audio_permission_denied=not allowed
         if not allowed:
-            message=("Audio del sistema: permiso no reconocido por macOS para "
-                     "esta versión. Puedes usar las entradas USB. Para YouTube, "
-                     "autoriza esta aplicación en Privacidad y reiníciala.")
+            message=("macOS no reconoce el permiso de captura de audio "
+                     "del sistema de esta aplicación. La autorización "
+                     "depende de la firma del programa. No se modificará "
+                     "el permiso guardado. Para recuperar la captura, "
+                     "autoriza la aplicación firmada cuando macOS lo indique.")
+            self.monitor_button.setText("Autorizar audio")
+            self.monitor_button.setToolTip(
+                "Pedir acceso a Grabación de pantalla y audio del sistema "
+                "a macOS una sola vez tras pulsar este botón.")
             self.statusline.setText(message)
             self.mode.setText("● PERMISO DE AUDIO PENDIENTE")
             if hasattr(self,"rec_hint"):
@@ -636,6 +651,8 @@ class MonitorWindow(QMainWindow):
                 self._screen_permission_notice_logged=True
         else:
             self._screen_permission_notice_logged=False
+            if not (self.worker and self.worker.isRunning()):
+                self.monitor_button.setText("Iniciar supervisión")
         return allowed
 
     def _on_capture_source_selected(self,*_):
@@ -665,14 +682,14 @@ class MonitorWindow(QMainWindow):
         self.start_monitor()
         self.log("Supervisión automática del audio del sistema activada.")
 
-    def start_monitor(self):
+    def start_monitor(self,request_permission=False):
         if self.worker and self.worker.isRunning():
             return
         device = self.sources.currentData()
         if not device:
             QMessageBox.information(self, "Sin fuente", "No hay una fuente de audio seleccionada.")
             return
-        if not self._system_capture_permission_ready():
+        if not self._system_capture_permission_ready(request=request_permission):
             return
         self.worker = CaptureWorker(device, self, sample_rate=self.capture_rate.currentData())
         self.worker.set_input_controls(self.input_gain_db,self.input_balance)
@@ -723,7 +740,7 @@ class MonitorWindow(QMainWindow):
             self.stop_monitor()
         else:
             self._auto_monitor_suppressed=False
-            self.start_monitor()
+            self.start_monitor(request_permission=True)
 
     def stop_monitor_for_preview(self):
         if (self.worker and self.worker.isRunning()
@@ -823,7 +840,7 @@ class MonitorWindow(QMainWindow):
             self.worker.request_stop_recording()
             return
         from project_flow import ensure_recording_project,slug_name
-        if not self._system_capture_permission_ready():
+        if not self._system_capture_permission_ready(request=True):
             return
         if not ensure_recording_project(self):
             return
@@ -846,7 +863,7 @@ class MonitorWindow(QMainWindow):
             and self.worker.sample_rate!=self.capture_rate.currentData()):
             self.stop_monitor()
         if not self.worker or not self.worker.isRunning():
-            self.start_monitor()
+            self.start_monitor(request_permission=True)
         if not self.worker or not self.worker.isRunning():
             return
         try:
@@ -1154,20 +1171,82 @@ class MonitorWindow(QMainWindow):
 
 
 if __name__ == "__main__":
-    # Mismo binario para el renderizador offline: sin interfaz ni intro.
     if "--stemmidi-render" in sys.argv:
         from midi_offline_render import cli
         sys.exit(cli())
+    if "--stemmidi-intro-child" in sys.argv:
+        # Single-purpose multimedia process. It never creates the Studio
+        # window, writes project data or asks for permissions. If FFmpeg
+        # hangs during teardown, os._exit closes it without affecting
+        # the GUI process that is concurrently building the actual window.
+        from intro_video import IntroVideo
+        from PySide6.QtCore import QTimer
+        app=QApplication([sys.argv[0]])
+        app.setApplicationName("StemMIDI Studio - Intro")
+        dialog=IntroVideo()
+        # Optional forensic probe; inactive during normal application use.
+        probe=os.environ.get("STEMMIDI_INTRO_QA_LOG")
+        if probe:
+            import time
+            frames=[0]
+            ended=[False]
+            start=time.monotonic()
+            def observe_frame(frame):
+                if frame.isValid():frames[0]+=1
+            def observe_state(status):
+                if status==dialog.player.MediaStatus.EndOfMedia:
+                    ended[0]=True
+            dialog.screen_video.videoSink().videoFrameChanged.connect(observe_frame)
+            dialog.player.mediaStatusChanged.connect(observe_state)
+        dialog.start()
+        QTimer.singleShot(16100,dialog.accept)
+        dialog.exec()
+        if probe:
+            import json
+            try:
+                Path(probe).write_text(json.dumps({
+                    "frames":frames[0],"end_of_media":ended[0],
+                    "elapsed_s":round(time.monotonic()-start,3),
+                    "duration_ms":dialog.player.duration(),
+                    "position_ms":dialog.player.position(),
+                    "error":dialog.player.errorString(),
+                }))
+            except OSError:pass
+        os._exit(0)
     from intro_video import start_external_intro,finish_external_intro,play_intro
-    # La intro y la carga de widgets transcurren en paralelo. Nunca
-    # recortar el vídeo ni mostrar una ventana que lo tape.
+    # Launch the APPROVED intro in its own FFplay process. In parallel,
+    # construct all tabs while the full 11.375-second VIDEO is visible.
+    # This prevents the audio-only/zero-size Qt fullscreen problem and
+    # removes serial "intro time + GUI construction time" from startup.
     intro_process=start_external_intro()
+    intro_played=os.environ.get("STEMMIDI_INTRO_PLAYED")=="1"
     app=QApplication(sys.argv)
     app.setApplicationName("StemMIDI Studio")
     app.setStyle("Fusion")
-    app.setStyleSheet(STYLE)
+    from studio_shell import STYLE_STUDIO
+    from neon_identity import NEON_GLOBAL_CSS
+    from pathlib import Path
+    check=Path(__file__).resolve().parent/"assets/check_white.svg"
+    app.setStyleSheet(STYLE_STUDIO+NEON_GLOBAL_CSS+
+        "\nQCheckBox::indicator:checked {image:url('"+str(check)+"');}\n")
     window=MonitorWindow()
-    if not finish_external_intro(intro_process):
-        play_intro()  # Respaldo Qt si FFplay no está disponible.
+    if intro_process is not None:
+        if not finish_external_intro(intro_process):
+            # The Debian fallback stays unchanged. On macOS, no video
+            # decoder may ever execute inside the GUI process again.
+            if sys.platform!="darwin":
+                play_intro()
+    elif not intro_played and sys.platform!="darwin":
+        play_intro()
+    # La intro debe entregar el primer plano a la interfaz principal.
+    # Mostrar primero y activar en el siguiente ciclo Qt permite que
+    # macOS termine de retirar la ventana independiente del vídeo.
     window.show()
+    def _activate_main_after_intro():
+        if window.isMinimized():
+            window.showNormal()
+        window.raise_()
+        window.activateWindow()
+        app.setActiveWindow(window)
+    QTimer.singleShot(0, _activate_main_after_intro)
     sys.exit(app.exec())

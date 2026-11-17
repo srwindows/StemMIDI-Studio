@@ -26,9 +26,18 @@ class FloatingTransport(QFrame):
         self.kind=kind
         self.setObjectName("floatingTransportPanel")
         if kind=="mixer":
-            from project_mixer_expanded import ProjectMixerTransport
-            self.project_mixer_strip=ProjectMixerTransport(
-                home._floating_manager.other_expanders[home.mix_card].project_mixer,self)
+            expander=home._floating_manager.other_expanders[home.mix_card]
+            restored=getattr(expander,"floating_mixer",None)
+            if restored is not None:
+                if getattr(restored,"premium_floating_mixer",False):
+                    from mixer_floating_design import TopFloatingTransport as ProjectMixerTransport
+                else:
+                    from mixer_floating_restored import ProjectMixerTransport
+                view=restored
+            else:
+                from project_mixer_expanded import ProjectMixerTransport
+                view=expander.project_mixer
+            self.project_mixer_strip=ProjectMixerTransport(view,self)
             frame=QVBoxLayout(self)
             frame.setContentsMargins(0,0,0,0)
             frame.setSpacing(0)

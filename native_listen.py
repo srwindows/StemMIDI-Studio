@@ -89,7 +89,7 @@ class NativeListen:
         # Sin señal hasta recibir un bloque del motor. Volumen neutro;
         # la ganancia y la EQ ya se aplicaron antes de feed().
         info = sd.query_devices(self.device)
-        # interfaz MIDI USB / Sonoma 14: el driver 1.0.1 bloquea la salida
+        # interfaz MIDI USB-0 / Sonoma 14: el driver 1.0.1 bloquea la salida
         # 2ch/48 kHz, pero funciona en 4ch/48 kHz y 2ch/96 kHz.
         # Abrir los cuatro canales y enviar señal solo a L/R evita el bloqueo.
         if (sys.platform == "darwin" and self.sample_rate == 48000

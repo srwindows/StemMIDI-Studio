@@ -306,7 +306,7 @@ class PianoRollExpanded(QWidget):
                 self.rhythm_style.addItem(label,code)
         available=available_styles()
         if available:
-            heading("Colección local · ritmos importados")
+            heading("Biblioteca local · ritmos importados")
             for alias,source in (("Balada romántica · biblioteca local","balada _1"),
                                  ("Balada pop · biblioteca local","balada _2")):
                 if source in available:self.rhythm_style.addItem(alias,source)
@@ -321,7 +321,7 @@ class PianoRollExpanded(QWidget):
         self.rhythm_style.setToolTip(
             "72 estilos musicales originales del compositor organizados"
             " por familia (siempre disponibles), más los 59 ritmos"
-            " privados de la biblioteca local cuando está conectado el disco."
+            " privados si existe un disco externo configurado."
             " Cambian ataques, acentos y síncopa de acordes y melodía;"
             " no son pistas completas de batería ni audio de acompañamiento.")
         row.addWidget(self.progression,1)

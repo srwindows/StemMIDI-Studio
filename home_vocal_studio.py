@@ -87,6 +87,10 @@ QFrame#vocalHomeStudio QPushButton#vocalPrimary {
         self._project_key=None
         self._result_signature=()
         self._default=deepcopy(self.mod.full_preset_snapshot())
+        # El primer preset debe representar exactamente los controles de
+        # Afinación vocal al abrir; no anunciar ajustes que no están activos.
+        self.mod.full_presets.builtins["Afinación natural · estudio"]=(
+            deepcopy(self._default))
         self._history_timer=QTimer(self)
         self._history_timer.setSingleShot(True)
         self._history_timer.setInterval(350)
@@ -119,6 +123,19 @@ QFrame#vocalHomeStudio QPushButton#vocalPrimary {
         self.presets=PresetStrip(
             "vocal_completo",builtins,
             self.mod.full_preset_snapshot,self.apply_preset,self)
+        # PRESETS DE AFINACIÓN, independientes de los de Clonación.
+        self.presets.choices.setMinimumWidth(240)
+        self.presets.choices.setMaximumWidth(330)
+        self.presets.choices.setToolTip(
+            "Presets de afinación vocal y estilos de mezcla. "
+            "Aplican valores reales sin cambiar la tónica ni la escala.")
+        for label in self.presets.findChildren(QLabel):
+            if label.text()=="PRESET":
+                label.setText("AFINACIÓN / ESTILO")
+                break
+        self.presets.choices.setItemText(0,"— Ajustes personalizados —")
+        self.presets.message.setText(
+            f"{len(self.presets.builtins)} de fábrica")
         body.addWidget(self.presets)
 
         toolbar=QHBoxLayout();toolbar.setSpacing(5)
@@ -143,13 +160,15 @@ QFrame#vocalHomeStudio QPushButton#vocalPrimary {
         self.tabs=QTabWidget(self)
         self.tabs.setObjectName("vocalFloatTabs")
         self.tabs.setDocumentMode(True)
-        self.tabs.setMaximumHeight(320)
+        self.tabs.setMinimumHeight(145)
+        self.tabs.setMaximumHeight(205)
         body.addWidget(self.tabs,1)
         self._build_tune()
         self._build_character()
         self._build_fx()
         self._build_spatial()
         self._build_reference()
+        self._build_cloning()
 
         self.feedback=QLabel("Selecciona una grabación monofónica para empezar.")
         self.feedback.setWordWrap(True)
@@ -167,8 +186,8 @@ QFrame#vocalHomeStudio QPushButton#vocalPrimary {
             lambda paths:len(paths)==1 and self.load_voice(str(paths[0])),
             DROPPABLE_AUDIO)
         self.results.setAlternatingRowColors(True)
-        self.results.setMinimumHeight(64)
-        self.results.setMaximumHeight(105)
+        self.results.setMinimumHeight(72)
+        self.results.setMaximumHeight(160)
         self.results.itemDoubleClicked.connect(lambda _:self.play_processed())
         body.addWidget(self.results)
 
@@ -187,6 +206,7 @@ QFrame#vocalHomeStudio QPushButton#vocalPrimary {
         self._view_timer.timeout.connect(self.refresh)
         self.refresh_sources()
         self.refresh()
+        self._sync_full_preset_selection()
 
     def _button(self,title,callback):
         button=QPushButton(title,self)
@@ -201,8 +221,9 @@ QFrame#vocalHomeStudio QPushButton#vocalPrimary {
     def _tab(self,name,columns=2):
         panel=QWidget(self)
         grid=QGridLayout(panel)
-        grid.setContentsMargins(12,9,12,9)
-        grid.setSpacing(8)
+        grid.setContentsMargins(5,3,5,3)
+        grid.setHorizontalSpacing(6)
+        grid.setVerticalSpacing(3)
         grid.setAlignment(Qt.AlignTop)
         for i in range(columns):grid.setColumnStretch(i,1)
         self.tabs.addTab(panel,name)
@@ -212,20 +233,27 @@ QFrame#vocalHomeStudio QPushButton#vocalPrimary {
         name,suffix=VOLUME_NAMES[key]
         source=getattr(self.mod,key)
         slot=QWidget(self)
-        box=QVBoxLayout(slot)
-        box.setContentsMargins(2,2,2,2)
-        box.setSpacing(3)
-        head=QHBoxLayout();head.setSpacing(4)
-        head.addWidget(QLabel(name))
-        value=QLabel("")
-        value.setMinimumWidth(52)
-        value.setAlignment(Qt.AlignRight|Qt.AlignVCenter)
-        head.addWidget(value)
-        box.addLayout(head)
-        slider=QSlider(Qt.Horizontal,self)
+        box=QHBoxLayout(slot)
+        box.setContentsMargins(2,1,2,1)
+        box.setSpacing(4)
+        label=QLabel(name,slot)
+        label.setMinimumWidth(0)
+        label.setMaximumWidth(91)
+        label.setToolTip(name)
+        box.addWidget(label,0)
+        slider=QSlider(Qt.Horizontal,slot)
         slider.setRange(int(source.minimum()),int(source.maximum()))
         slider.setValue(int(source.value()))
-        slider.setMinimumWidth(90)
+        slider.setMinimumWidth(48)
+        slider.setMaximumWidth(145)
+        box.addWidget(slider,1)
+        value=QLabel("",slot)
+        value.setMinimumWidth(40)
+        value.setMaximumWidth(53)
+        value.setAlignment(Qt.AlignRight|Qt.AlignVCenter)
+        box.addWidget(value,0)
+        slot.setMinimumHeight(25)
+        slot.setMaximumHeight(29)
         slider.setToolTip(
             "Control real del motor vocal. Cambios aplicados"
             " únicamente al pulsar «Procesar voz».")
@@ -235,14 +263,17 @@ QFrame#vocalHomeStudio QPushButton#vocalPrimary {
             source.setValue(number)
             self._history_timer.start()
         slider.valueChanged.connect(change)
-        box.addWidget(slider)
         grid.addWidget(slot,index//columns,index%columns)
         self._controls[key]=(source,slider,value,suffix)
 
     def _add_combo(self,grid,row,column,title,source,key):
-        area=QHBoxLayout();area.setSpacing(5)
-        area.addWidget(QLabel(title))
+        area=QHBoxLayout();area.setSpacing(4)
+        caption=QLabel(title,self)
+        caption.setMaximumWidth(64)
+        area.addWidget(caption)
         control=QComboBox(self)
+        control.setMinimumWidth(0)
+        control.setMaximumWidth(154)
         for i in range(source.count()):
             control.addItem(source.itemText(i))
         def changed(index):
@@ -251,7 +282,8 @@ QFrame#vocalHomeStudio QPushButton#vocalPrimary {
             source.setCurrentIndex(index)
             self._history_timer.start()
         control.currentIndexChanged.connect(changed)
-        area.addWidget(control,1)
+        area.addWidget(control,0)
+        area.addStretch(1)
         grid.addLayout(area,row,column)
         self._controls[key]=(source,control,None,"combo")
 
@@ -270,7 +302,7 @@ QFrame#vocalHomeStudio QPushButton#vocalPrimary {
         self._history_timer.start()
 
     def _build_tune(self):
-        g=self._tab("Afinación · escala",3)
+        g=self._tab("Afinación",3)
         self._add_combo(g,0,0,"Tónica",self.mod.tonic,"tonic")
         self._add_combo(g,0,1,"Escala",self.mod.scale,"scale")
         self._add_check(g,0,2,"Sin corregir notas",self.mod.bypass_tune,"bypass_tune")
@@ -287,7 +319,7 @@ QFrame#vocalHomeStudio QPushButton#vocalPrimary {
         g.addWidget(self.analysis_info,3,0,1,3)
 
     def _build_character(self):
-        g=self._tab("Carácter vocal",3)
+        g=self._tab("Carácter",3)
         self._add_combo(g,0,0,"Carácter",self.mod.character,"character")
         for i,key in enumerate((
                 "character_amount","warmth","presence","air",
@@ -295,13 +327,13 @@ QFrame#vocalHomeStudio QPushButton#vocalPrimary {
             self._add_slider(g,i+3,key,3)
 
     def _build_fx(self):
-        g=self._tab("Efectos · mezcla",3)
+        g=self._tab("Efectos",3)
         for i,key in enumerate((
             "reverb","wet","doubler","delay","delay_ms","stereo_width")):
             self._add_slider(g,i,key,3)
 
     def _build_spatial(self):
-        g=self._tab("Dinámica · salida",3)
+        g=self._tab("Dinámica",3)
         for i,key in enumerate((
             "compression","highpass","output_gain_db",
             "presence","deesser","gate")):
@@ -329,11 +361,21 @@ QFrame#vocalHomeStudio QPushButton#vocalPrimary {
         self.reference_info.setStyleSheet("color:#8dcae7;")
         g.addWidget(self.reference_info,4,0,1,3)
 
+    def _build_cloning(self):
+        from vocal_clone_panel import VocalClonePanel
+        self.clone_panel=VocalClonePanel(self)
+        self.mod._clone_panel=self.clone_panel
+        self.mod.reference.textChanged.connect(self.clone_panel.refresh_reference)
+        self.tabs.addTab(self.clone_panel,"Clonación")
+
     def _full_state(self):
         # Estado para Undo, no forma parte de los presets globales.
         return {"settings":deepcopy(self.mod.full_preset_snapshot()),
                 "source":self.mod.input.text().strip(),
                 "reference":self.mod.reference.text().strip(),
+                "clone":self.clone_panel.snapshot(),
+                "clone_engine":self.clone_panel.neural_snapshot(),
+                "clone_model":self.clone_panel.model.currentData(),
                 "consent":self.mod.ref_consent.isChecked()}
 
     def _begin_edit(self):
@@ -357,6 +399,12 @@ QFrame#vocalHomeStudio QPushButton#vocalPrimary {
         self._applying=True
         try:
             self.mod.apply_full_preset(data["settings"])
+            if isinstance(data.get("clone"),dict):
+                self.clone_panel.apply_settings(data["clone"])
+            if isinstance(data.get("clone_engine"),dict):
+                self.clone_panel.apply_neural(data["clone_engine"])
+            if "clone_model" in data:
+                self.clone_panel.refresh_models(data["clone_model"])
             source=data.get("source","")
             if not source or Path(source).is_file():
                 self.mod.input.setText(source)
@@ -365,11 +413,9 @@ QFrame#vocalHomeStudio QPushButton#vocalPrimary {
                 self.mod.reference.setText(ref)
             self.mod.ref_consent.setChecked(bool(data.get("consent",False)))
         finally:self._applying=False
-        # Una instantánea restaurada no tiene por qué coincidir con el
-        # preset que aparecía seleccionado. No mostrar un nombre falso.
-        with QSignalBlocker(self.presets.choices):
-            self.presets.choices.setCurrentIndex(0)
-        self.presets.message.setText("Ajustes restaurados")
+        # Restaurar el nombre activo en función de los valores recuperados.
+        self._sync_full_preset_selection()
+        self.clone_panel.sync_selected_preset()
         self.home._sync_vocal_module(force=True)
         self.refresh_sources()
         self.refresh()
@@ -399,6 +445,10 @@ QFrame#vocalHomeStudio QPushButton#vocalPrimary {
         previous=self._full_state()
         current=deepcopy(previous)
         current["settings"]=deepcopy(self._default)
+        from vocal_clone_panel import DEFAULT as CLONE_DEFAULT
+        current["clone"]=deepcopy(CLONE_DEFAULT)
+        from vocal_engine_capabilities import NEURAL_KNOBS
+        current["clone_engine"]={key:default for key,_,_,_,default,*_ in NEURAL_KNOBS}
         if current==previous:return
         self._apply_state(current)
         self._undo.append(previous)
@@ -408,10 +458,57 @@ QFrame#vocalHomeStudio QPushButton#vocalPrimary {
         self.session_status.setText(
             "Ajustes de fábrica restaurados. Deshacer disponible.")
 
+    def _sync_full_preset_selection(self):
+        """Muestra el preset de Afinación vocal que realmente está aplicado.
+
+        La tónica y la escala pertenecen a la canción, no al estilo vocal.
+        Cambiar una de ellas no debe cambiar falsamente el preset activo.
+        """
+        if not hasattr(self,"presets"):
+            return
+        current=self.mod.full_preset_snapshot()
+        for strip in (self.presets,self.mod.full_presets):
+            match=None
+            personal=strip._read()
+            expected=({("base",name) for name in strip.builtins} |
+                      {("propio",name) for name in personal})
+            present={strip.choices.itemData(i)
+                     for i in range(1,strip.choices.count())}
+            if present!=expected:
+                strip.refresh()
+            for index in range(1,strip.choices.count()):
+                entry=strip.choices.itemData(index)
+                if not entry:
+                    continue
+                origin,name=entry
+                values=(strip.builtins.get(name)
+                        if origin=="base" else personal.get(name))
+                if not isinstance(values,dict):
+                    continue
+                if all(current.get(key)==value for key,value in values.items()
+                       if key not in ("tonic","scale")):
+                    match=index
+                    break
+            with QSignalBlocker(strip.choices):
+                strip.choices.setCurrentIndex(match if match is not None else 0)
+                strip.choices.setItemText(0,"— Ajustes personalizados —")
+            if match is None:
+                strip.message.setText("Personalizado")
+            else:
+                strip.message.setText(
+                    f"{len(strip.builtins)} de fábrica" if strip is self.presets
+                    else "Preset activo")
+
     def apply_preset(self,settings):
+        if not isinstance(settings,dict):
+            return
         self._begin_edit()
-        self.mod.apply_full_preset(settings)
+        # Un preset vocal nunca debe cambiar la tonalidad de la canción.
+        applied={**settings,"tonic":self.mod.tonic.currentIndex(),
+                 "scale":self.mod.scale.currentText()}
+        self.mod.apply_full_preset(applied)
         self._finish_edit()
+        self._sync_full_preset_selection()
         self.refresh()
 
     def _project(self):
@@ -436,6 +533,9 @@ QFrame#vocalHomeStudio QPushButton#vocalPrimary {
                 current[key]=str(Path(raw).resolve().relative_to(project))
             else:current[key]=""
         content={"version":1,"settings":current["settings"],
+                 "clone":current["clone"],
+                 "clone_engine":current["clone_engine"],
+                 "clone_model":current["clone_model"],
                  "source":current["source"],
                  "reference":current["reference"],
                  "consent":current["consent"]}
@@ -461,6 +561,9 @@ QFrame#vocalHomeStudio QPushButton#vocalPrimary {
                 raise ValueError("Formato de sesión incompatible")
             project=self._project()
             current={"settings":data["settings"],
+                     "clone":data.get("clone",{}),
+                     "clone_engine":data.get("clone_engine",{}),
+                     "clone_model":data.get("clone_model","openvoice_v2"),
                      "source":"","reference":"",
                      "consent":bool(data.get("consent",False))}
             for key in ("source","reference"):
@@ -730,3 +833,4 @@ QFrame#vocalHomeStudio QPushButton#vocalPrimary {
             self.undo_button.setEnabled(not busy and bool(self._undo))
             self.redo_button.setEnabled(not busy and bool(self._redo))
         finally:self._applying=False
+        self._sync_full_preset_selection()

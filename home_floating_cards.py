@@ -5,6 +5,7 @@ no modal y sin botón X. El candado abierto lo devuelve exactamente al
 QLayout de origen. No se alteran los motores ni se duplican señales.
 """
 from __future__ import annotations
+from pathlib import Path
 
 from PySide6.QtCore import Qt, QObject, QEvent, QPoint, QSize, QByteArray, QTimer
 from PySide6.QtGui import QCursor, QPixmap, QIcon
@@ -144,10 +145,12 @@ class FloatingCard(QDialog):
             event.accept()
         else:super().keyPressEvent(event)
     def closeEvent(self,event):
-        if self.manager.is_detached(self.card):
-            event.ignore()
+        # La X, Cmd+W y el cierre de Qt deben devolver el módulo a Inicio.
+        # No ignorar la solicitud: aceptar el cierre evita ventanas fantasma
+        # cuando la tarjeta cambia de padre durante el desacoplamiento.
+        if self.manager.is_detached(self.card) and not getattr(self,'_redocking',False):
             self.manager.redock(self.card)
-        else:super().closeEvent(event)
+        event.accept()
 
     def hideEvent(self,event):
         # KDE puede ocultar transitoriamente las ventanas Qt.Tool cuando se
@@ -492,6 +495,28 @@ class CardManager(QObject):
         floatwin=FloatingCard(self,card)
         self.windows[card]=floatwin
         self._last_active_card=card
+        if card is self.home.mix_card:
+            # La cabecera original sólo tiene candado y ayuda: añadir X
+            # inequívoca para cerrar la ventana sin salir del programa.
+            close_button=QPushButton("×",card)
+            close_button.setObjectName("floatingMixerClose")
+            close_button.setToolTip("Cerrar mezclador y volver a Inicio")
+            close_button.setFixedSize(32,34)
+            close_button.setCursor(Qt.PointingHandCursor)
+            close_button.setStyleSheet(
+                "QPushButton#floatingMixerClose{background:#10386b;"
+                "color:#eafaff;font-size:24px;font-weight:bold;"
+                "border:1px solid #50caff;border-radius:5px;padding:0;}"
+                "QPushButton#floatingMixerClose:hover{background:#b52c45;color:white;}")
+            heading=card.layout().itemAt(0).layout()
+            # Candado AUTÉNTICO: pulsa para devolver a Inicio. Ningún
+            # botón debe minimizar el mezclador o sustituir el candado.
+            card.help_button.hide()
+            card.lock_button.show()
+            card.lock_button.setToolTip("Bloquear mezclador · devolver a Inicio")
+            heading.addWidget(close_button)
+            close_button.clicked.connect(floatwin.close)
+            floatwin.mixer_close_button=close_button
         card.setParent(floatwin.frame)
         floatwin.body.addWidget(card,1)
         card.setMinimumSize(0,0)
@@ -504,7 +529,40 @@ class CardManager(QObject):
         card.lock_button.setToolTip("Bloquear · devolver este módulo a su posición original")
         for button in card.findChildren(QPushButton):
             button.setCursor(Qt.PointingHandCursor)
-        floatwin.setStyleSheet(FLOAT_STYLE)
+        if card is self.home.mix_card:
+            # Tema neón exclusivo del mezclador, sin alterar las otras 11 tarjetas.
+            neon_style = """
+            QFrame#floatingGlass {
+              background:qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                stop:0 #0c4695,stop:.07 #07336a,stop:.33 #052452,
+                stop:.72 #051c42,stop:1 #04162f);
+              border:3px solid #66f8ff;border-radius:15px;
+            }
+            QFrame#studioCard[expandedCard="true"] {
+              background:qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                stop:0 #0a3877,stop:.09 #062c62,stop:1 #031a3c);
+              border:2px solid #46d8ff;border-radius:11px;
+            }
+            QFrame#studioCard[expandedCard="true"] QPushButton#studioCardHeading {
+              background:qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                stop:0 #2a88ed,stop:.18 #0c61bb,stop:.55 #08448e,stop:1 #05265b);
+              color:#f4ffff;font-weight:900;font-size:18px;
+              border-top:2px solid #b0ffff;min-height:41px;
+            }
+            QPushButton#homeLockButton {
+              background:qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                stop:0 #1b7db9,stop:.18 #0a4583,stop:1 #061c41);
+              border:2px solid #76ffff;border-radius:8px;
+              min-width:32px;max-width:34px;min-height:31px;max-height:34px;
+            }
+            """
+            floatwin.setStyleSheet(FLOAT_STYLE+neon_style)
+            halo=floatwin.frame.graphicsEffect()
+            if halo is not None:
+                halo.setBlurRadius(43)
+                halo.setColor(QColor(15,235,255,176))
+        else:
+            floatwin.setStyleSheet(FLOAT_STYLE)
         if card is self.home.mon_card:
             # Restaurar Formato y Calidad originales al ampliar. El botón
             # de laboratorio se oculta porque ya existe el panel avanzado.
@@ -518,12 +576,13 @@ class CardManager(QObject):
         target=QSize(1260 if card is self.home.piano_card else
                      1190 if card is self.home.info_card else
                      1050 if card is self.home.vocal_card else
-                     940 if card is self.home.sep_card else 870 if large else 800,
+                     940 if card is self.home.sep_card else 1390 if card is self.home.mix_card else 870 if large else 800,
                      1030 if card is self.home.piano_card else
                      1004 if card is self.home.info_card else
                      925 if card is self.home.vocal_card else
                      735 if card is self.home.sep_card else
                      930 if card is self.home.mon_card else
+                     900 if card is self.home.mix_card else
                      720 if large else 615)
         bounds=QApplication.primaryScreen().availableGeometry()
         if card is self.home.piano_card:
@@ -557,7 +616,17 @@ class CardManager(QObject):
         self._native_floating_popups(card)
         # Reproductor local en la ventana: no accede a ninguna otra pestaña.
         # Grabación ya posee REC/Play+VU propios, por lo que no se duplica.
-        if card is not self.home.mon_card and card is not self.home.info_card:
+        mixer_view=(getattr(self.other_expanders.get(card),
+                            "project_mixer",None))
+        pro_mix=(card is self.home.mix_card and
+                 (getattr(mixer_view,"is_pro_console",False) or
+                  getattr(mixer_view,"is_simple_mixer",False)))
+        restored=(card is self.home.mix_card and
+                  getattr(self.other_expanders.get(card),"floating_mixer",None)
+                  is not None)
+        if card is not self.home.mon_card and card is not self.home.info_card and (not pro_mix or restored):
+            # Consola profesional ya tiene su transporte compartido.
+            # No superponer un segundo transporte flotante.
             # «MIDI a audio» tiene su propio transporte completo:
             # no añadir otra franja de reproducción duplicada.
             from floating_transport import FloatingTransport
@@ -565,7 +634,14 @@ class CardManager(QObject):
                 "monitor","sep","midi","results","wave","drums",
                 "tracks","mixer","piano","vocal","drum_stems","info")))
             strip=FloatingTransport(self.home,names[card],floatwin.frame)
-            floatwin.body.addWidget(strip,0)
+            if names[card]=="mixer" and getattr(
+                self.other_expanders[card].floating_mixer,
+                "premium_floating_mixer",False):
+                # Transporte realmente PRIMERO, sobre la lista y los faders.
+                panel=self.other_expanders[card].floating_mixer
+                panel.layout().insertWidget(0,strip,0)
+            else:
+                floatwin.body.addWidget(strip,0)
             floatwin.float_transport=strip
             screen=QApplication.primaryScreen().availableGeometry()
             desired=(1030 if names[card]=="piano" else
@@ -617,6 +693,17 @@ class CardManager(QObject):
             dlg=getattr(self.home.main,"_help_center",None)
             if dlg is not None:dlg.hide()
         window=self.windows.pop(card)
+        window._redocking=True
+        close_button=getattr(window,'mixer_close_button',None)
+        if close_button is not None:
+            heading=card.layout().itemAt(0).layout()
+            heading.removeWidget(close_button)
+            close_button.hide()
+            close_button.setParent(None)
+            close_button.deleteLater()
+            window.mixer_close_button=None
+            card.lock_button.show()
+            card.help_button.show()
         dlg=getattr(self.home.main,"_help_center",None)
         if dlg is not None and dlg.parent() is window:
             dlg.hide()
@@ -626,7 +713,12 @@ class CardManager(QObject):
         strip=getattr(window,"float_transport",None)
         if strip is not None:
             strip.cleanup()
+            holder=strip.parentWidget()
+            if holder is not None and holder.layout() is not None:
+                holder.layout().removeWidget(strip)
             window.body.removeWidget(strip)
+            strip.hide()
+            strip.setParent(None)
             strip.deleteLater()
             window.float_transport=None
         if card is self.home.sep_card:

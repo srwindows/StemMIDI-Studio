@@ -1,24 +1,5 @@
 # Historial de StemMIDI Studio
 
-## 2.0.0 — 2026-11-17 · macOS Intel
-
-- Paquete macOS Intel autónomo con la interfaz, los motores de audio/IA,
-  las herramientas nativas y SoundFont General MIDI.
-- Instalador selectivo de 11 modelos de IA utilizados en el desarrollo,
-  con seis recomendados y tamaños verificados.
-- Descarga de pesos solo tras consentimiento; archivos temporales,
-  validación SHA-256 e instalación reversible sin sobrescritura silenciosa.
-- Catálogo de IAs adicionales en Preferencias → Modelos de IA.
-- Los pesos externos no se incluyen en el instalador público.
-- Se conserva el modelo agregado de composición propio, sin fuentes
-  de entrenamiento ni colecciones MIDI de terceros.
-- Cambios de interfaz y de módulos de macOS realizados desde 1.1.0.
-
-**Limitaciones:** paquete Intel (no ARM nativo), firma ad hoc no notarizada.
-Se recomienda validar captura del sistema, permisos y motores IA en
-una instalación limpia antes de usarlo en producción.
-La versión 3.0 para Windows queda pendiente.
-
 ## 1.1.0 — 2026-11-04
 
 - Publicacion del estado actual de los modulos de StemMIDI Studio.

@@ -246,7 +246,7 @@ def main():
     report['with_pedal']=conn.execute('SELECT COUNT(*) FROM canciones WHERE has_cc64=1').fetchone()[0]
     report['with_lyrics']=conn.execute('SELECT COUNT(*) FROM canciones WHERE has_lyrics=1').fetchone()[0]
     report['4_4_meter']=conn.execute('SELECT COUNT(*) FROM canciones WHERE numerator=4 and denominator=4').fetchone()[0]
-    report['top_gm_similar']=[dict(name=n,count=c,avg_similarity=round(v,3))
+    report['top_roland_similar']=[dict(name=n,count=c,avg_similarity=round(v,3))
         for n,c,v in conn.execute('''SELECT approximate_style,COUNT(*),
           AVG(similarity) FROM canciones WHERE similarity>=0.5
           AND approximate_style!='' GROUP BY approximate_style

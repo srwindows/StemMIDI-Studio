@@ -1,7 +1,7 @@
-"""Análisis privado de patrones GM de batería GM.
+"""Análisis privado de patrones GM de batería General MIDI.
 
 Solo extrae estadísticas agregadas de ataques y acentos. No copia,
-exporta ni incorpora los MIDI privados al ejecutable o al repositorio.
+exporta ni incorpora los MIDI de General MIDI al ejecutable o al repositorio.
 No infiere acordes o melodías de eventos de batería (canal MIDI 10).
 """
 from __future__ import annotations
@@ -144,7 +144,7 @@ def _scan(directory):
 
 
 def available_styles():
-    """Profiles read-only, no external proprietary pattern data included in release."""
+    """Profiles read-only, no external General MIDI data included in release."""
     return _scan(str(_source()))
 
 

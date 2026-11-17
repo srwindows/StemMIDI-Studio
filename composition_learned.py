@@ -19,7 +19,7 @@ FILE="composition_learned_model.json"
 
 @lru_cache(maxsize=1)
 def load_model():
-    roots=[Path(__file__).resolve().parent,Path(__file__).resolve().parent.parent]
+    roots=[Path(__file__).resolve().parent]
     workspace=os.getenv('STEMMIDI_WORKSPACE')
     if workspace:roots.append(Path(workspace))
     if hasattr(sys,'_MEIPASS'):roots.insert(0,Path(sys._MEIPASS))

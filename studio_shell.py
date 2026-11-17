@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt, QRectF, QTimer
 from PySide6.QtGui import QColor, QPainter, QPen, QBrush, QLinearGradient, QFont, QPainterPath, QRadialGradient
 from PySide6.QtWidgets import (
     QWidget,QHBoxLayout,QVBoxLayout,QLabel,QFrame,QPushButton,QTabWidget,
-    QFileDialog,QMessageBox,QDialog,QFormLayout,QComboBox,QCheckBox
+    QFileDialog,QMessageBox,QDialog,QFormLayout,QComboBox,QCheckBox,QMenu
 )
 from studio_home import StudioHome,BrandLogo
 
@@ -402,15 +402,22 @@ class StudioHeader(QFrame):
                 actions.addWidget(self.help_toggle)
         row.addLayout(actions)
         row.setAlignment(actions,Qt.AlignBottom)
+        # Mac: controles circulares propios en la esquina SUPERIOR IZQUIERDA.
+        # La ventana es frameless; Qt no dibuja los controles nativos por sí mismo.
         self.win_controls=[]
-        for title,tooltip,callback,name in (
-            ("−","Minimizar",self.main.showMinimized,"studioWindowControl"),
-            ("□","Maximizar / Restaurar",self.toggle_maximized,"studioWindowControl"),
-            ("×","Cerrar StemMIDI Studio",self.main.close,"studioCloseControl")):
-            btn=QPushButton(title,self)
-            btn.setObjectName(name)
-            btn.setFixedSize(29,24)
+        for color,tooltip,callback in (
+            ("#ff5f57","Cerrar StemMIDI Studio",self.main.close),
+            ("#febc2e","Minimizar",self.main.showMinimized),
+            ("#28c840","Ampliar / Restaurar",self.toggle_maximized)):
+            btn=QPushButton("",self)
+            btn.setObjectName("stemMacTrafficLight")
+            btn.setFixedSize(15,15)
             btn.setToolTip(tooltip)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setStyleSheet("QPushButton#stemMacTrafficLight {"
+                f"background:{color};border:1px solid rgba(0,0,0,0.22);"
+                "border-radius:7px;padding:0;min-width:15px;min-height:15px;}"
+                "QPushButton#stemMacTrafficLight:hover {border:1px solid white;}")
             btn.clicked.connect(callback)
             btn.raise_()
             self.win_controls.append(btn)
@@ -455,7 +462,7 @@ class StudioHeader(QFrame):
         if self.help_toggle.width()!=help_width:
             self.help_toggle.setFixedWidth(help_width)
         for i,btn in enumerate(self.win_controls):
-            btn.move(self.width()-111+37*i,7)
+            btn.move(11+21*i,8)
 
     def paintEvent(self,event):
         if getattr(self,'drum_compact',False):
@@ -592,6 +599,11 @@ def project_payload(main):
       "vocal_reference_authorized":main.vocal_module.ref_consent.isChecked(),
       "parameters_mixer":(w.mixer.preset_snapshot() if w.mixer else
           getattr(main,"_pending_mixer_preset",None)),
+      # The actual pro console has an independent mixer engine. Persist its
+      # channels, both faders, all BUS FX and routing in THIS SAME manifest.
+      "parameters_console_pro":__import__("console_project_state").snapshot(main),
+      "active_tab":main.tabs.tabText(main.tabs.currentIndex()),
+      "active_tab_index":main.tabs.currentIndex(),
       "mixer_sources":[str(p) for p in w.mixer.sources] if w.mixer else [],
       "midi_files":[str(p) for p in w.midi_storage.items],
       "separated_files":[str(p) for p in w.separation_storage.items],
@@ -1116,9 +1128,27 @@ def open_project(main,path=None):
         # proyecto recupera SOLO su disposición guardada. Los proyectos
         # antiguos sin esta clave siguen usando el Inicio original.
         main.studio_home.home_workspace.restore(data.get("home_workspace"))
-        # El destino visual de la apertura es SIEMPRE Inicio.
-        # Ninguna restauración de archivo MIDI o de mezclador lo cambia.
-        main.tabs.setCurrentWidget(main.studio_home)
+        # Restore the professional console AFTER project/catalog/workspace
+        # restoration; earlier code discarded BUS FX, channel assignments
+        # and the two independent fader levels at every reopen.
+        from console_project_state import restore as restore_console,legacy_snapshot
+        saved_console=data.get("parameters_console_pro")
+        if not isinstance(saved_console,dict) and project_dir is not None:
+            saved_console=legacy_snapshot(project_dir)
+        if isinstance(saved_console,dict):
+            if not restore_console(main,saved_console):
+                raise ValueError("No se pudieron restaurar los buses del mezclador")
+        # Reopen the exact tab the user saved, not forcibly Inicio.
+        tab_name=data.get("active_tab")
+        restored_tab=False
+        if isinstance(tab_name,str) and tab_name.strip():
+            for i in range(main.tabs.count()):
+                if main.tabs.tabText(i)==tab_name:
+                    main.tabs.setCurrentIndex(i)
+                    restored_tab=True
+                    break
+        if not restored_tab:
+            main.tabs.setCurrentWidget(main.studio_home)
         from project_status_dialog import show_project_status
         show_project_status(main,candidate.parent,candidate,action="abierto")
         return True
@@ -1600,8 +1630,14 @@ def install(main):
     QApplication.instance().setWindowIcon(icon)
     check=assets/"check_white.svg"
     from neon_identity import NEON_GLOBAL_CSS
-    QApplication.instance().setStyleSheet(STYLE_STUDIO+NEON_GLOBAL_CSS+
+    full_css=STYLE_STUDIO+NEON_GLOBAL_CSS+(
         "\nQCheckBox::indicator:checked {image:url('"+str(check)+"');}\n")
+    # Applying a global stylesheet after thousands of widgets exist triggers
+    # a full synchronous recursive repolish (~6 sec on macOS). Apply it
+    # before creating the windows in main.py, and never repeat the repolish.
+    app=QApplication.instance()
+    if app.styleSheet()!=full_css:
+        app.setStyleSheet(full_css)
     # No pintar un rectángulo oscuro encima de las esquinas transparentes.
     # La carcasa redondeada pinta el gradiente/borde usando el mismo esquema
     # que floatingGlass; el resto del CSS y módulos no se tocan.
@@ -1628,9 +1664,17 @@ def install(main):
     # profesional, reutilizando los mismos controles y motores.
     from advanced_tab_parity import install as install_advanced_parity
     install_advanced_parity(main)
+    # Exclusivamente pestaña Piano Roll: editor protagonista y mismas
+    # herramientas existentes del flotante, sin clonar motores ni alterar
+    # la ventana flotante o ninguna otra pestaña.
+    from piano_roll_tab_pro import install as install_piano_tab_pro
+    install_piano_tab_pro(main)
     # Audio→MIDI: eliminar barras anidadas con los controles reales intactos.
     from midi_compact_workspace import install as install_midi_compact_workspace
     install_midi_compact_workspace(main)
+    # Afinación vocal: una sola superficie, controles asociados, sin scroll doble.
+    from vocal_dense_workspace import install as install_vocal_dense_workspace
+    install_vocal_dense_workspace(main)
     # Batería: superficie compacta sin paneles gigantes ni scroll ocultando
     # controles. Reutiliza exactamente las señales y widgets existentes.
     from drum_flat_workspace import install as install_drum_flat_workspace
@@ -1643,5 +1687,9 @@ def install(main):
     # no sustituir ninguno de los reproductores que ya funcionan.
     from global_midi_transport import install as install_global_midi
     install_global_midi(main)
+    # Popup Qt embebido en antiguas QGraphicsScene: garantizar menús
+    # nativos visibles y seleccionables en todas las pestañas y flotantes.
+    from combo_dropdown_runtime import install as install_dropdown_guard
+    install_dropdown_guard(main)
     return home
 

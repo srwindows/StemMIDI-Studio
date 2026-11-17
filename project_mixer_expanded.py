@@ -50,7 +50,7 @@ class ContrastFileCheckboxDelegate(QStyledItemDelegate):
         if state is None:return
         from PySide6.QtGui import QColor,QPen,QPainterPath,QPainter
         rect=self.indicator_rect(option,index)
-        checked=state==Qt.Checked
+        checked=state in (Qt.Checked,Qt.Checked.value)
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(QPen(QColor("#d7fbff"),2))
@@ -73,7 +73,7 @@ class ContrastFileCheckboxDelegate(QStyledItemDelegate):
                 event.position().toPoint())):
             if event.type()==QEvent.MouseButtonRelease:
                 old=index.data(Qt.CheckStateRole)
-                model.setData(index,Qt.Unchecked if old==Qt.Checked else Qt.Checked,
+                model.setData(index,Qt.Unchecked.value if old in (Qt.Checked,Qt.Checked.value) else Qt.Checked.value,
                               Qt.CheckStateRole)
             return True
         return super().editorEvent(event,model,option,index)
@@ -101,6 +101,17 @@ class ProjectMixerView(QWidget):
         self.setObjectName("projectMixerView")
         self.setStyleSheet("""
             QWidget#projectMixerView{background:transparent;border:0;}
+            QFrame#projectFilesPanel {
+                background:qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                     stop:0 #133763,stop:.11 #09254d,stop:1 #04152c);
+                border:1px solid #4098cc;border-top:1px solid #8fe7ff;
+                border-radius:7px;
+            }
+            QFrame#projectChannelArea {
+                background:qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                     stop:0 #0c3265,stop:1 #03162e);
+                border:1px solid #267fc4;border-radius:7px;
+            }
             QListWidget#projectMixFiles{
                 background:#04152f;color:#dcf5ff;
                 border:1px solid #2f95dc;border-radius:6px;
@@ -109,28 +120,75 @@ class ProjectMixerView(QWidget):
             QListWidget#projectMixFiles::item:hover{background:#0c4980;}
             QListWidget#projectMixFiles::item:selected{background:#12639a;color:white;}
             QScrollArea#projectChannelScroll{background:#04142f;border:1px solid #1f76c8;border-radius:6px;}
-            QFrame#projectChannelCell{background:#092653;border:1px solid #196bab;border-radius:5px;}
+            QFrame#projectChannelCell{
+                background:qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                  stop:0 #03152c,stop:.12 #204c77,stop:.25 #0e3159,
+                  stop:.70 #092344,stop:.88 #173d68,stop:1 #051832);
+                border:1px solid #377ca9;border-top:1px solid #8ccde7;
+                border-radius:6px;
+            }
+            QFrame#projectChannelCell QLabel{color:#d9f5ff;font-weight:700;}
+            QFrame#projectChannelCell QCheckBox{
+                color:#dcf9ff;background:qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                  stop:0 #345c86,stop:.5 #143251,stop:1 #041329);
+                border:1px solid #5688b0;border-radius:4px;
+                padding:1px 6px;min-height:17px;min-width:27px;
+            }
+            QFrame#projectChannelCell QCheckBox:checked{
+                background:#a43649;color:#fff5f6;border-color:#ff7b86;}
+            QFrame#projectChannelCell QCheckBox:disabled{color:#6586a1;}
             QCheckBox{color:#f4ecf1;font-weight:700;}
             QCheckBox:checked{color:#ffb9c6;}
-            QSlider#projectVolumeFader::groove:vertical{
-                background:#0b355e;border:1px solid #49b5e8;
-                border-radius:4px;width:8px;}
-            QSlider#projectVolumeFader::handle:vertical{
-                background:#50e9ff;border:2px solid #edffff;
-                height:17px;margin:0 -7px;border-radius:6px;}
-            QSlider#projectVolumeFader::handle:vertical:hover{
-                background:#ffffff;border:2px solid #51d9ff;}
-            QSlider#projectVolumeFader::add-page:vertical{background:#0a2449;}
-            QSlider#projectVolumeFader::sub-page:vertical{background:#16cae4;}
         """)
         box=QVBoxLayout(self)
-        box.setContentsMargins(1,1,1,1)
-        box.setSpacing(5)
-        head=label("MEZCLA DEL PROYECTO · MARCA LOS ARCHIVOS QUE QUIERES ESCUCHAR",self)
-        head.setStyleSheet("color:#83f3ff;font-weight:800;font-size:12px;")
-        box.addWidget(head)
+        box.setContentsMargins(2,2,2,2)
+        box.setSpacing(3)
+        # Canales a la izquierda; selección de archivos SOLO en el margen
+        # derecho, a partir de donde comienza «Abrir ventana flotante».
+        work_row=QHBoxLayout()
+        work_row.setContentsMargins(0,0,0,0)
+        work_row.setSpacing(6)
+        self.channel_panel=QFrame(self)
+        self.channel_panel.setObjectName("projectChannelArea")
+        channel_box=QVBoxLayout(self.channel_panel)
+        channel_box.setContentsMargins(6,5,6,5)
+        channel_box.setSpacing(4)
+        channels_head=label("CANALES · FADERS DE GANANCIA",self.channel_panel)
+        channels_head.setStyleSheet("color:#93eeff;font-size:11px;font-weight:800;")
+        channels_head.setFixedHeight(19)
+        channel_box.addWidget(channels_head,0)
+        self.channel_scroll=QScrollArea(self.channel_panel)
+        self.channel_scroll.setObjectName("projectChannelScroll")
+        self.channel_scroll.setWidgetResizable(True)
+        self.channel_scroll.setFrameShape(QFrame.NoFrame)
+        self.channel_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.channel_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.channel_scroll.setMinimumHeight(142)
+        self.channel_scroll.setMaximumHeight(1000)
+        self.channel_scroll.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Expanding)
+        self.channel_root=QWidget()
+        self.channel_root.setObjectName("projectChannelRoot")
+        self.channel_row=QHBoxLayout(self.channel_root)
+        self.channel_row.setContentsMargins(4,4,4,4)
+        self.channel_row.setSpacing(4)
+        self.channel_scroll.setWidget(self.channel_root)
+        channel_box.addWidget(self.channel_scroll,1)
+        work_row.addWidget(self.channel_panel,1)
+
+        self.file_panel=QFrame(self)
+        self.file_panel.setObjectName("projectFilesPanel")
+        self.file_panel.setMinimumWidth(265)
+        self.file_panel.setMaximumWidth(355)
+        self.file_panel.setSizePolicy(QSizePolicy.Fixed,QSizePolicy.Expanding)
+        file_box=QVBoxLayout(self.file_panel)
+        file_box.setContentsMargins(7,6,7,5)
+        file_box.setSpacing(4)
+        files_head=label("ARCHIVOS PARA MEZCLAR",self.file_panel)
+        files_head.setStyleSheet("color:#93eeff;font-weight:800;font-size:11px;")
+        files_head.setFixedHeight(19)
+        file_box.addWidget(files_head)
         from results_dragdrop import FilesDragList
-        self.file_list=FilesDragList(self)
+        self.file_list=FilesDragList(self.file_panel)
         self.file_list.setObjectName("projectMixFiles")
         self.file_list.set_drop_handler(
             lambda paths:self.home._result_file_drag_router.deliver("mixer",paths)
@@ -138,29 +196,27 @@ class ProjectMixerView(QWidget):
             AUDIO|MIDI)
         self.file_list.setAlternatingRowColors(True)
         self.file_list.setItemDelegate(ContrastFileCheckboxDelegate(self.file_list))
-        self.file_list.setMinimumHeight(100)
-        self.file_list.setMaximumHeight(192)
+        self.file_list.setMinimumHeight(98)
+        self.file_list.setMaximumHeight(1000)
+        self.file_list.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Expanding)
         self.file_list.itemChanged.connect(self._check_source)
-        box.addWidget(self.file_list,1)
-        self.summary=label("Marca los archivos que quieras mezclar.",self)
-        box.addWidget(self.summary)
-        box.addWidget(label("CANALES · VOLUMEN VERTICAL Y MUTE INDIVIDUAL",self))
-        self.channel_scroll=QScrollArea(self)
-        self.channel_scroll.setObjectName("projectChannelScroll")
-        self.channel_scroll.setWidgetResizable(True)
-        self.channel_scroll.setFrameShape(QFrame.NoFrame)
-        self.channel_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.channel_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.channel_scroll.setMinimumHeight(156)
-        self.channel_scroll.setMaximumHeight(183)
-        self.channel_root=QWidget()
-        self.channel_root.setObjectName("projectChannelRoot")
-        self.channel_row=QHBoxLayout(self.channel_root)
-        self.channel_row.setContentsMargins(3,3,3,3)
-        self.channel_row.setSpacing(4)
-        self.channel_scroll.setWidget(self.channel_root)
-        box.addWidget(self.channel_scroll)
+        file_box.addWidget(self.file_list,1)
+        self.summary=label("Marca los archivos que quieras mezclar.",self.file_panel)
+        self.summary.setStyleSheet("color:#acdff7;font-size:10px;")
+        self.summary.setWordWrap(True)
+        self.summary.setMinimumHeight(17)
+        self.summary.setMaximumHeight(30)
+        file_box.addWidget(self.summary,0)
+        work_row.addWidget(self.file_panel,0)
+        box.addLayout(work_row,1)
         self.refresh_catalog(force=True)
+
+    def resizeEvent(self,event):
+        super().resizeEvent(event)
+        # En monitores estrechos los archivos no deben ahogar los 7 faders.
+        target=min(355,max(265,round(self.width()*0.28)))
+        if self.file_panel.maximumWidth()!=target:
+            self.file_panel.setFixedWidth(target)
 
     @staticmethod
     def _canonical(file):
@@ -276,18 +332,24 @@ class ProjectMixerView(QWidget):
         for channel_key,source,label_text in plan:
             box=QFrame(self.channel_root)
             box.setObjectName("projectChannelCell")
-            box.setFixedWidth(73)
+            box.setFixedWidth(87)
             layout=QVBoxLayout(box)
-            layout.setContentsMargins(4,4,4,4)
-            layout.setSpacing(3)
+            layout.setContentsMargins(3,3,3,3)
+            layout.setSpacing(2)
             caption=label(label_text,box)
             caption.setAlignment(Qt.AlignHCenter)
             caption.setToolTip(str(self.sources[source]) if source else label_text)
-            caption.setFixedHeight(28)
+            caption.setFixedHeight(18)
             caption.setWordWrap(True)
             layout.addWidget(caption)
-            fader=QSlider(Qt.Vertical,box)
+            # Reutilizar el fader hardware 3D ya probado en el estudio.
+            # Su relleno SE ILUMINA DESDE ABAJO, con máximo en la parte
+            # superior (QSlider normal) y capuchón tridimensional.
+            from studio_home import StudioFader
+            fader=StudioFader(box)
             fader.setObjectName("projectVolumeFader")
+            fader.setInvertedAppearance(False)
+            fader.setInvertedControls(False)
             fader.setToolTip("Arrastra para ajustar el nivel del canal "+label_text)
             fader.setRange(0,150)
             fader.setSingleStep(1)
@@ -301,10 +363,15 @@ class ProjectMixerView(QWidget):
             # aún no tenga un archivo marcado. No reproducen nada hasta
             # que se selecciona una fuente. Los adicionales son activos.
             fader.setEnabled(True)
-            fader.setMinimumHeight(90)
+            fader.setMinimumHeight(70)
+            fader.setSizePolicy(QSizePolicy.Fixed,QSizePolicy.Expanding)
             layout.addWidget(fader,1,Qt.AlignHCenter)
             readout=label(f"{value}%")
             readout.setAlignment(Qt.AlignCenter)
+            readout.setFixedHeight(16)
+            readout.setStyleSheet(
+                "color:#e1faff;font-weight:800;background:#03172e;"
+                "border:1px solid #2a739d;border-radius:3px;")
             layout.addWidget(readout)
             muted=QCheckBox("M",box)
             if existing is not None:
@@ -312,14 +379,14 @@ class ProjectMixerView(QWidget):
             else:muted.setChecked(self.checked_mutes.get(channel_key,False))
             muted.setEnabled(source is not None)
             muted.setToolTip("Silenciar únicamente este archivo")
+            muted.setMaximumHeight(19)
             layout.addWidget(muted,0,Qt.AlignHCenter)
             fader.valueChanged.connect(
                 lambda amount,k=channel_key,t=readout:self._level(k,amount,t))
             muted.toggled.connect(lambda flag,k=channel_key:self._mute(k,flag))
-            self.channel_row.addWidget(box)
+            self.channel_row.addWidget(box,1,Qt.AlignHCenter)
             self.channels[channel_key]=dict(source=source,fader=fader,mute=muted)
-        self.channel_row.addStretch(1)
-        self.channel_root.setMinimumWidth(len(plan)*77+14)
+        self.channel_root.setMinimumWidth(len(plan)*98+12)
         self.summary.setText(
             f"{len(self.sources)} archivos del proyecto · "
             f"{len(self.selected)} marcados · {len(plan)} canales")
@@ -368,6 +435,12 @@ class ProjectMixerView(QWidget):
         self.transport=transport
         self.transport.selection_changed()
 
+    def _midi_render_source_key(self,key):
+        return key
+
+    def _midi_render_key_active(self,key):
+        return key in self.selected and key in self.sources
+
     def _schedule_midi(self,key):
         if key in self._audio_cache or key in self._render_queue or self._rendering==key:
             return
@@ -378,15 +451,29 @@ class ProjectMixerView(QWidget):
         if self._proc is not None:return
         while self._render_queue:
             key=self._render_queue.pop(0)
-            if key not in self.selected or key not in self.sources:continue
-            file=self.sources[key]
-            dest=Path(self._tmp.name)/(str(abs(hash(key)))+".wav")
+            if not self._midi_render_key_active(key):continue
+            file=self.sources[self._midi_render_source_key(key)]
+            # Un WAV nuevo en cada síntesis: la reproducción anterior puede
+            # continuar hasta que termine el cambio de instrumento.
+            self._midi_render_sequence=getattr(self,"_midi_render_sequence",0)+1
+            dest=Path(self._tmp.name)/(
+                str(abs(hash(key)))+"_"+str(self._midi_render_sequence)+".wav")
+            instrument=getattr(self,"_midi_instrument_overrides",{}).get(key)
+            version=getattr(self,"_midi_render_versions",{}).get(key,0)
             self._rendering=key
             # El SF2 de este mismo proyecto/programa se usa si fue elegido;
             # de lo contrario TiMidity utiliza su banco configurado.
             options=["-s","44100"]
             card=getattr(self.home,"midi_to_audio",None)
             sf2=getattr(card,"soundfont",None) if card is not None else None
+            # Only the logical mixer channel has this override: do not
+            # change project-global GM, MIDI preview or any other channel.
+            selected_font=getattr(self,"_midi_soundfonts",{}).get(key)
+            if selected_font is not None:
+                if not Path(selected_font).is_file():
+                    self._midi_failed(process,key,"SoundFont del canal no encontrado")
+                    return
+                sf2=Path(selected_font)
             if sf2 is not None and Path(sf2).is_file():
                 config=Path(self._tmp.name)/"soundfont.cfg"
                 escaped=str(Path(sf2).resolve()).replace("\\","\\\\").replace('"','\\"')
@@ -395,23 +482,37 @@ class ProjectMixerView(QWidget):
             process=QProcess(self)
             self._proc=process
             process.finished.connect(
-                lambda code,status,p=process,k=key,o=dest:
-                self._midi_finished(p,k,o,code,status))
+                lambda code,status,p=process,k=key,o=dest,v=version:
+                self._midi_finished(p,k,o,code,status,v))
             process.errorOccurred.connect(
                 lambda error,p=process,k=key:
                 self._midi_error(p,k,error))
+            render_source=file
+            if instrument is not None:
+                try:
+                    from mixer_midi_instrument_choice import prepare_midi_for_instrument
+                    render_source=prepare_midi_for_instrument(
+                        file,dest.with_suffix(".mid"),instrument)
+                except (OSError,ValueError,TypeError,EOFError) as exc:
+                    self._midi_failed(process,key,"Instrumento MIDI: "+str(exc)[:100])
+                    return
             if sys.platform=="darwin":
                 from soundfont_catalog import system_soundfont
                 bank=Path(sf2) if sf2 and Path(sf2).is_file() else system_soundfont()
                 if bank is None:
                     self._midi_failed(process,key,"Banco General MIDI no disponible")
                     return
-                process.start("fluidsynth",[
+                from mixer_midi_render import fluidsynth_executable
+                executable=fluidsynth_executable()
+                if not executable:
+                    self._midi_failed(process,key,"FluidSynth integrado no disponible")
+                    return
+                process.start(executable,[
                     "-ni","-g","0.7","-r","44100",
-                    "-F",str(dest),str(bank),str(file)])
+                    "-F",str(dest),str(bank),str(render_source)])
             else:
                 process.start("timidity",[
-                    str(file),"-Ow","-o",str(dest),*options])
+                    str(render_source),"-Ow","-o",str(dest),*options])
             self.summary.setText("Sintetizando MIDI para mezclar: "+file.name)
             if self.transport:self.transport.selection_changed()
             return
@@ -421,15 +522,32 @@ class ProjectMixerView(QWidget):
         if error==QProcess.FailedToStart:
             self._midi_failed(proc,key,"Motor MIDI integrado no disponible")
 
-    def _midi_finished(self,proc,key,dest,code,status):
+    def _midi_finished(self,proc,key,dest,code,status,version=None):
         if proc is not self._proc:return
+        expected=getattr(self,"_midi_render_versions",{}).get(key,0)
+        if version is not None and version!=expected:
+            self._proc=None
+            self._rendering=None
+            proc.deleteLater()
+            try:dest.unlink(missing_ok=True)
+            except OSError:pass
+            # Forzar la última versión aunque haya un WAV antiguo en
+            # caché: _schedule_midi() lo omitiría y perdería la selección.
+            if (self._midi_render_key_active(key)
+                    and key not in self._render_queue):
+                self._render_queue.insert(0,key)
+            self._next_midi()
+            return
         success=(code==0 and status==QProcess.NormalExit
                  and dest.is_file() and dest.stat().st_size>128)
         if success:
+            old_audio=self._audio_cache.get(key)
             self._audio_cache[key]=dest
             self._proc=None
             self._rendering=None
             proc.deleteLater()
+            completed=getattr(self,"_on_midi_render_completed",None)
+            if callable(completed):completed(key,old_audio,dest)
             if self.transport:self.transport.selection_changed()
             self._next_midi()
         else:
@@ -440,6 +558,10 @@ class ProjectMixerView(QWidget):
         self._proc=None
         self._rendering=None
         proc.deleteLater()
+        on_failure=getattr(self,"_on_midi_render_failed",None)
+        if callable(on_failure) and on_failure(key,reason):
+            self._next_midi()
+            return
         self.selected.discard(key)
         self.summary.setText("MIDI no reproducible: "+reason)
         for i in range(self.file_list.count()):
@@ -482,30 +604,47 @@ from studio_vu_unified import (Ballistics,draw_vertical,
                                draw_mono_horizontal)
 
 class ScaledMeter(QWidget):
-    """La barra VERTICAL de cada pista conserva su posición original."""
-    def __init__(self,label_text,parent=None,width=86):
+    """VU estéreo L/R por pista, con el mismo motor visual del máster.
+
+    No suma ni colapsa los canales: utiliza los picos separados medidos por
+    LowLatencyStemMixer, 24 segmentos, escala -60...0 dBFS.
+    """
+    def __init__(self,label_text,parent=None,width=146):
         super().__init__(parent)
         self.caption=label_text
-        self.peak=0.
-        self._ballistics=Ballistics(1)
-        self.is_master=label_text.startswith("Máster")
-        self.setMinimumWidth(112 if self.is_master else 84)
-        self.setFixedHeight(66 if self.is_master else 108)
-        self.setToolTip("VU vertical Monitor / Grabación · −60 a 0 dBFS")
+        self._ballistics=Ballistics(2)
+        self.is_master=False
+        self.setFixedWidth(width)
+        self.setFixedHeight(102)
+        self.setToolTip("VU ESTÉREO L/R real · 24 segmentos · −60 a 0 dBFS")
     def set_peak(self,amplitude):
-        self.peak=max(0.,min(1.5,float(amplitude)))
-        self._ballistics.feed((self.peak,),(self.peak,))
+        # Compatibilidad con las llamadas antiguas (no se usa para mezcla).
+        self.set_peaks(amplitude,amplitude)
+    def set_peaks(self,left,right):
+        self._ballistics.feed((left,right),(left,right))
         self.update()
     def paintEvent(self,event):
-        from PySide6.QtGui import QPainter,QColor,QFontMetrics
+        from PySide6.QtGui import QPainter,QColor,QFont,QPen,QLinearGradient
+        from PySide6.QtCore import QRectF
+        from studio_vu_unified import draw_stereo
         painter=QPainter(self)
-        painter.setPen(QColor("#d4f5ff"))
-        font=painter.font();font.setPointSize(7);painter.setFont(font)
-        name=QFontMetrics(font).elidedText(self.caption,Qt.ElideRight,self.width()-6)
-        painter.drawText(3,12,name)
-        bounds=self.rect().adjusted(0,14,0,0)
-        draw_vertical(painter,bounds,self._ballistics.shown,
-                      self._ballistics.held,("L",),True)
+        painter.setRenderHint(QPainter.Antialiasing,True)
+        outer=self.rect().adjusted(1,1,-1,-1)
+        grad=QLinearGradient(0,0,0,self.height())
+        grad.setColorAt(0,QColor("#164776"))
+        grad.setColorAt(.14,QColor("#071b3a"))
+        grad.setColorAt(1,QColor("#041020"))
+        painter.setBrush(grad)
+        painter.setPen(QPen(QColor("#327aa8"),1.0))
+        painter.drawRoundedRect(outer,5,5)
+        painter.setPen(QColor("#def8ff"))
+        painter.setFont(QFont("Sans",8,QFont.DemiBold))
+        font=painter.fontMetrics()
+        name=font.elidedText(self.caption,Qt.ElideRight,self.width()-13)
+        painter.drawText(QRectF(5,3,self.width()-10,18),Qt.AlignCenter,name)
+        draw_stereo(painter,self.rect().adjusted(4,22,-4,-5),
+                    self._ballistics.shown,self._ballistics.held,
+                    ("L","R"),True)
         painter.end()
 
 class HorizontalMasterMeter(QWidget):
@@ -544,8 +683,34 @@ class ProjectMixerTransport(QFrame):
             QFrame#projectMixerTransport QScrollArea{
                 background:#041b3c;border:0;}
             QFrame#projectMixerTransport QPushButton {
-                background:#09529b;color:white;border:1px solid #32baf2;
-                padding:2px 8px;border-radius:5px;min-height:24px;}
+                background:qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                   stop:0 #64a7d1,stop:.12 #2f6c9f,
+                   stop:.49 #144677,stop:.55 #10375f,stop:1 #051a39);
+                color:#edfcff;border:1px solid #73a9c9;
+                border-top:1px solid #d8f9ff;
+                border-bottom:2px solid #06203a;
+                border-radius:5px;padding:3px 10px;min-height:26px;
+                font-weight:800;}
+            QFrame#projectMixerTransport QPushButton:hover {
+                border-color:#72edff;background:#1364a0;}
+            QFrame#projectMixerTransport QPushButton:pressed {
+                background:#082444;border-top:2px solid #06162b;
+                border-bottom:1px solid #66dfff;}
+            QFrame#projectMixerTransport QPushButton:disabled {
+                color:#7092ab;border-color:#284c69;
+                background:#0a2947;}
+            QSlider#projectTimeline::groove:horizontal{
+                height:9px;background:#031327;border:1px solid #4382ae;
+                border-radius:4px;}
+            QSlider#projectTimeline::sub-page:horizontal{
+                background:qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                    stop:0 #7bffff,stop:.4 #22cbe9,stop:1 #0a6088);
+                border-radius:4px;}
+            QSlider#projectTimeline::handle:horizontal{
+                background:qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                    stop:0 #ffffff,stop:.5 #9bd4f5,stop:1 #426d91);
+                border:1px solid #dbfcff;border-radius:6px;
+                width:13px;margin:-4px 0;}
         """)
         self.live=LowLatencyStemMixer(self)
         self.live.error.connect(self._error)
@@ -553,41 +718,40 @@ class ProjectMixerTransport(QFrame):
         self._meter_names=()
         layout=QVBoxLayout(self)
         layout.setContentsMargins(8,5,8,7);layout.setSpacing(4)
-        # Única fila del transporte: botones | progreso | VU master L/R | reloj.
-        # Los VU están A LA DERECHA del progreso, L arriba y R abajo.
-        # No se debe volver a colocarlos debajo de la barra de progreso.
+        # Transporte: botones → VU master L/R → progreso CORTO → reloj.
+        # La barra no debe atravesar la ventana ni separar los botones del VU.
         transport=QGridLayout()
         transport.setContentsMargins(0,0,0,0)
-        transport.setHorizontalSpacing(6)
+        transport.setHorizontalSpacing(9)
         transport.setVerticalSpacing(2)
-        transport.setColumnStretch(1,1)
+        transport.setColumnStretch(4,1)
         buttons=QHBoxLayout()
         buttons.setContentsMargins(0,0,0,0)
         buttons.setSpacing(5)
         self.play=QPushButton("▶ Play",self)
         self.pause=QPushButton("Ⅱ",self)
         self.stop=QPushButton("■",self)
+        for button in (self.play,self.pause,self.stop):
+            button.setCursor(Qt.PointingHandCursor)
         buttons.addWidget(self.play)
         buttons.addWidget(self.pause)
         buttons.addWidget(self.stop)
         transport.addLayout(buttons,0,0,2,1,Qt.AlignVCenter)
-        self.timeline=QSlider(Qt.Horizontal,self)
-        self.timeline.setRange(0,1000)
-        self.timeline.setTracking(False)
-        self.timeline.sliderReleased.connect(self.seek)
-        self.timeline.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
-        # ui_polish.apply_slider reduce todos los sliders a 230 px. Este
-        # es un seekbar de audio: conservar su ancho completo sin afectar
-        # los faders de valores de los demás módulos.
-        self.timeline.setProperty("allowWideSlider",True)
-        self.timeline.setMaximumWidth(16777215)
-        transport.addWidget(self.timeline,0,1,2,1,Qt.AlignVCenter)
         self.master_meters={}
         for row_index,name in enumerate(("L","R")):
             meter=HorizontalMasterMeter(name,self)
-            transport.addWidget(meter,row_index,2)
+            transport.addWidget(meter,row_index,1)
             self.master_meters[name]=meter
+        self.timeline=QSlider(Qt.Horizontal,self)
+        self.timeline.setObjectName("projectTimeline")
+        self.timeline.setRange(0,1000)
+        self.timeline.setTracking(False)
+        self.timeline.sliderReleased.connect(self.seek)
+        self.timeline.setProperty("allowWideSlider",True)
+        self.timeline.setFixedWidth(340)  # aproximadamente cuatro tiras de canal
+        transport.addWidget(self.timeline,0,2,2,1,Qt.AlignVCenter)
         self.clock=label("00:00 / 00:00")
+        self.clock.setStyleSheet("color:#e2f9ff;font-weight:800;")
         transport.addWidget(self.clock,0,3,2,1,Qt.AlignVCenter)
         layout.addLayout(transport)
         volume=QHBoxLayout()
@@ -598,16 +762,18 @@ class ProjectMixerTransport(QFrame):
         self.master_volume.setValue(self.view.home.master_volume.value())
         self.master_volume.valueChanged.connect(self._set_master)
         self.view.home.master_volume.valueChanged.connect(self._pull_master)
-        volume.addWidget(self.master_volume,1)
+        self.master_volume.setMaximumWidth(230)
+        volume.addWidget(self.master_volume,0)
         self.master_value=label(str(self.master_volume.value())+" %")
         volume.addWidget(self.master_value)
+        volume.addStretch(1)
         layout.addLayout(volume)
-        layout.addWidget(label("VU POR PISTA · VERTICALES · dBFS"))
+        layout.addWidget(label("VU POR CANAL · ESTÉREO L/R · −60 a 0 dBFS"))
         self.meter_scroll=QScrollArea(self)
         self.meter_scroll.setWidgetResizable(True)
         self.meter_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.meter_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.meter_scroll.setMinimumHeight(121);self.meter_scroll.setMaximumHeight(126)
+        self.meter_scroll.setMinimumHeight(86);self.meter_scroll.setMaximumHeight(117)
         self.meter_root=QWidget()
         self.meter_row=QHBoxLayout(self.meter_root)
         self.meter_row.setContentsMargins(2,2,2,2);self.meter_row.setSpacing(6)
@@ -622,9 +788,12 @@ class ProjectMixerTransport(QFrame):
         self.timer=QTimer(self)
         self.timer.setInterval(90)
         self.timer.timeout.connect(self.refresh)
+        self._compact_state=None
+        self._meter_width_state=None
         self.timer.start()
         self.view.attach_transport(self)
         self._sync_meters()
+        self._fit_layout()
 
     def _set_master(self,value):
         self.view.home.master_volume.setValue(value)
@@ -641,18 +810,65 @@ class ProjectMixerTransport(QFrame):
     def _sync_meters(self):
         plan=self.view._channel_plan()
         signature=tuple((a,b,c) for a,b,c in plan)
-        if signature==self._meter_names:return
+        # Una consola reparentada puede haber destruido los QWidget de Qt,
+        # aunque sus envoltorios Python y la firma de pistas permanezcan.
+        # No reutilizar referencias a controles ya destruidos.
+        import shiboken6
+        if (signature==self._meter_names
+            and all(shiboken6.isValid(m) for _,m in self.track_meters.values())):
+            return
         self._meter_names=signature
         while self.meter_row.count():
             item=self.meter_row.takeAt(0)
             if item.widget():item.widget().deleteLater()
         self.track_meters={}
         for channel,source,caption in plan:
-            meter=ScaledMeter(caption,self.meter_root,86)
+            meter=ScaledMeter(caption,self.meter_root,146)
+            if self._compact_state:
+                meter.setFixedHeight(73)
             self.meter_row.addWidget(meter)
             self.track_meters[channel]=(source,meter)
         self.meter_row.addStretch()
-        self.meter_root.setMinimumWidth(len(plan)*90+12)
+        self._meter_width_state=None
+        self._fit_meter_widths()
+
+    def _fit_meter_widths(self):
+        if not self.track_meters:
+            return
+        # Encajar las siete lecturas L/R en monitores de 1100px sin crear
+        # scroll horizontal ni convertirlas en mono.
+        count=len(self.track_meters)
+        available=max(0,self.meter_scroll.viewport().width())
+        space=max(0,available-12-(count-1)*6-8)
+        desired=min(260,max(114,space//count))
+        if desired==self._meter_width_state:
+            return
+        self._meter_width_state=desired
+        import shiboken6
+        for source,meter in self.track_meters.values():
+            if shiboken6.isValid(meter):
+                meter.setFixedWidth(desired)
+        self.meter_root.setMinimumWidth(count*(desired+6)+12)
+
+    def _fit_layout(self):
+        # En alturas 735–800px reducir adornos, NO ocultar transporte,
+        # faders, botones M ni el segundo canal del vúmetro.
+        compact=self.window().height()<810
+        if compact != self._compact_state:
+            self._compact_state=compact
+            self.setMinimumHeight(190 if compact else 230)
+            self.setMaximumHeight(205 if compact else 272)
+            self.status.setVisible(not compact)
+            for meter in self.master_meters.values():
+                meter.setFixedSize(194 if compact else 220,
+                                   25 if compact else 31)
+            self.meter_scroll.setMinimumHeight(76 if compact else 107)
+            self.meter_scroll.setMaximumHeight(82 if compact else 117)
+            import shiboken6
+            for _,meter in self.track_meters.values():
+                if shiboken6.isValid(meter):
+                    meter.setFixedHeight(73 if compact else 102)
+        self._fit_meter_widths()
 
     def selection_changed(self):
         self._sync_meters()
@@ -707,6 +923,7 @@ class ProjectMixerTransport(QFrame):
     def refresh(self):
         from preview_player import timecode
         self._sync_meters()
+        self._fit_layout()
         if self.live.running and (
             (self.live.duration_ms and self.live.position()>=self.live.duration_ms)
             or (self.live._eof and self.live._queue.empty() and self.live.blocks)):
@@ -727,9 +944,15 @@ class ProjectMixerTransport(QFrame):
             self.master_meters[channel].set_peak(peak)
         actual=(self.live.track_peaks if self.live.running and not self.live.paused
                 else {})
-        for channel,(source,meter) in self.track_meters.items():
+        import shiboken6
+        for channel,(source,meter) in tuple(self.track_meters.items()):
+            if not shiboken6.isValid(meter):
+                # El dueño Qt destruyó este vúmetro al cambiar de pestaña.
+                # Se reconstruye en el siguiente ciclo, no se toca el proxy.
+                self._meter_names=()
+                continue
             peak=actual.get(source,(0.,0.)) if source else (0.,0.)
-            meter.set_peak(max(peak))
+            meter.set_peaks(peak[0],peak[1])
         if self.live.running:
             self.status.setText(
                 f"Reproduciendo {len(self.view.selected)} archivos · "

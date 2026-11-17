@@ -6,7 +6,7 @@ Antes de enviar una contribucion:
 
 1. Documenta el sistema operativo, la version, los pasos, el resultado
    esperado y el resultado observado.
-2. Nunca incluyas canciones MIDI/KAR, bases rítmicas privadas, grabaciones, proyectos,
+2. Nunca incluyas canciones MIDI/KAR, bases General MIDI, grabaciones, proyectos,
    modelos IA ajenos sin licencia o corpus de entrenamiento personales.
 3. Ejecuta la comprobacion de sintaxis de Python y los tests aplicables.
 4. Concede prioridad a compatibilidad con Debian 13 y a no romper las

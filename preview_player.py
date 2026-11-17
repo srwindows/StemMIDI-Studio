@@ -21,8 +21,8 @@ from pathlib import Path
 from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, QUrl, QTimer, Signal
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QMediaDevices
 from PySide6.QtWidgets import (
-    QComboBox, QFrame, QHBoxLayout, QLabel, QPushButton,
-    QSlider, QVBoxLayout, QWidget,
+    QComboBox, QDialog, QFormLayout, QFrame, QHBoxLayout, QLabel,
+    QPushButton, QSlider, QVBoxLayout, QWidget,
 )
 
 from audio_import import probe_audio, describe_audio, normalize_command
@@ -37,7 +37,7 @@ OUTPUT_PREFS = ROOT / "salida_audio_preview.json"
 class AudioRoute:
     """Destino de audio común a todas las escuchas, sin modificar PipeWire.
 
-    Si Debian apunta por defecto a un dispositivo multicanal (como FANTOM
+    Si Debian apunta por defecto a un dispositivo multicanal (como GM
     Pro de cuatro canales), se prefiere una salida estéreo analógica
     disponible para la reproducción. La elección se puede cambiar en GUI.
     """
@@ -306,6 +306,7 @@ class PreviewPlayer(QFrame):
         self._update_controls()
         self._compact_active=False
         self._compact_expanded=True
+        self._compact_settings_popup=False
 
     def set_compact(self,enabled=True):
         """Transporte visible sin ocupar 180 px de altura en cada pestaña.
@@ -321,8 +322,52 @@ class PreviewPlayer(QFrame):
 
     def _toggle_compact_details(self):
         if not self._compact_active:return
+        if self._compact_settings_popup:
+            # A fixed-height preview is NOT tall enough to expand volume,
+            # speed and output device inline. Use a bounded settings window:
+            # no overlapping VUs, faders or transport controls.
+            self._open_compact_settings()
+            return
         self._compact_expanded=not self._compact_expanded
         self._apply_compact()
+
+    def _open_compact_settings(self):
+        dialog=QDialog(self)
+        dialog.setObjectName("monitorPreviewSettingsDialog")
+        dialog.setWindowTitle("Opciones de escucha de grabaciones")
+        dialog.setMinimumWidth(390)
+        form=QFormLayout(dialog)
+        volume=QSlider(Qt.Horizontal,dialog)
+        volume.setObjectName("monitorPreviewSettingsVolume")
+        volume.setRange(0,100)
+        volume.setValue(self.volume.value())
+        volume.valueChanged.connect(self.volume.setValue)
+        form.addRow("Volumen de escucha",volume)
+        speed=QComboBox(dialog)
+        speed.setObjectName("monitorPreviewSettingsSpeed")
+        for i in range(self.speed.count()):
+            speed.addItem(self.speed.itemText(i),self.speed.itemData(i))
+        speed.setCurrentIndex(self.speed.currentIndex())
+        speed.currentIndexChanged.connect(self.speed.setCurrentIndex)
+        form.addRow("Velocidad",speed)
+        device=QComboBox(dialog)
+        device.setObjectName("monitorPreviewSettingsOutput")
+        for output in AudioRoute.devices():
+            device.addItem(output.description(),AudioRoute._id(output))
+        idx=device.findData(AudioRoute.current_id())
+        if idx>=0:device.setCurrentIndex(idx)
+        device.currentIndexChanged.connect(
+            lambda index:AudioRoute.choose(device.itemData(index))
+            if index>=0 else None)
+        form.addRow("Salida de escucha",device)
+        note=QLabel("Estos ajustes afectan a la preescucha, no al archivo grabado.",dialog)
+        note.setWordWrap(True)
+        form.addRow(note)
+        close=QPushButton("Cerrar",dialog)
+        close.setObjectName("monitorPreviewSettingsClose")
+        close.clicked.connect(dialog.accept)
+        form.addRow(close)
+        dialog.exec()
 
     def _apply_compact(self):
         extra=self._compact_expanded or not self._compact_active
@@ -655,7 +700,13 @@ class PreviewPlayer(QFrame):
             if bank is None:
                 self.status.setText("No se encuentra el SoundFont General MIDI")
                 return
-            self._launch_render("fluidsynth",[
+            from mixer_midi_render import fluidsynth_executable
+            synth=fluidsynth_executable()
+            if not synth:
+                self.status.setText("FluidSynth integrado no disponible")
+                self.error.emit("FluidSynth integrado no disponible")
+                return
+            self._launch_render(synth,[
                 "-ni","-g","0.7","-r","44100","-F",str(path),
                 str(bank),str(self._origin)],path)
         else:

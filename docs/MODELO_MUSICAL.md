@@ -9,7 +9,7 @@ grados de acordes y de intervalos melodicos. Tiene **42 perfiles**.
 ## Lo que NO contiene
 
 - Ninguno de los mas de 20.000 archivos MIDI/KAR del corpus particular.
-- Ninguna de las 59 bases rítmicas privadas originales.
+- Ninguna de las 59 bases ritmicas General MIDI originales.
 - Archivos MIDI, audio, letras, titulos, nombres originales de canciones,
   muestras o secuencias de eventos completas de una cancion.
 - Bases de datos, proyectos, configuraciones o rutas privadas.
@@ -19,7 +19,7 @@ grados de acordes y de intervalos melodicos. Tiene **42 perfiles**.
 Las estadisticas proceden del aprendizaje sobre colecciones MIDI/KAR
 particulares, que no se redistribuyen. No se garantiza que todos los
 estilos musicales esten correctamente etiquetados. Las categorias
-similares a ritmos privados representan aproximaciones estadisticas,
+similares a ritmos del General MIDI representan aproximaciones estadisticas,
 **no son generos verificados**.
 
 Se ha verificado la ausencia de archivos fuente y cadenas identificativas

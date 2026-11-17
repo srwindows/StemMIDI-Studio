@@ -1,0 +1,19 @@
+{
+  "format": "WAV (PCM 24 bits · estudio)",
+  "sample_rate": 48000,
+  "input_gain_db": 0,
+  "input_balance": 0,
+  "input_eq": {
+    "bass": 0,
+    "mid": 0,
+    "treble": 0,
+    "enabled": true
+  },
+  "prefix": "Mezcla_R13",
+  "folder": "/Volumes/trabajos/StemMIDI_Studio_Trabajo_Mac/Consola_20261108/IMPLEMENTACION_PROYECTO_BUS_REVERB_R13_20261110/project_roundtrip_yuvvjkkh/proyectos/Mezcla R13/grabaciones",
+  "projects_base": "/Volumes/trabajos/StemMIDI_Studio_Trabajo_Mac/StemMIDI_macOS_1.1.0/source/proyectos",
+  "show_mics": true,
+  "source": "macos:system-audio",
+  "macos_system_audio_source_v1": true,
+  "professional_help_enabled": true
+}

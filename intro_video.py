@@ -10,12 +10,13 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
-from PySide6.QtWidgets import QDialog, QVBoxLayout
+from PySide6.QtWidgets import QDialog, QVBoxLayout, QApplication
 
 from studio_paths import workspace_root
 
@@ -105,14 +106,36 @@ def start_external_intro():
     video=intro_path()
     if not video.is_file():
         return None
+    # On macOS FFplay can remain stuck in Cocoa/SDL and a Qt video
+    # QDialog can deadlock on QMediaPlayer.stop(). The intro therefore
+    # runs in its OWN copy of the app, never in the main GUI process.
+    if sys.platform=="darwin":
+        if getattr(sys,"frozen",False):
+            command=[sys.executable,"--stemmidi-intro-child"]
+        else:
+            command=[sys.executable,
+                     str(Path(__file__).resolve().parent/"main.py"),
+                     "--stemmidi-intro-child"]
+        try:
+            proc=subprocess.Popen(
+                command,env=os.environ.copy(),stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        except OSError:
+            return None
+        proc._stemmidi_intro_start=time.monotonic()
+        proc._stemmidi_intro_child=True
+        return proc
     player=_intro_player()
     if not player:return None
     env=os.environ.copy()
     if sys.platform=="linux":
         env.setdefault("SDL_AUDIODRIVER","pulseaudio")
+    # Duración aprobada del MP4: 11.375 s. El límite -t evita que una
+    # instancia FFplay/Sdl permanezca abierta indefinidamente en macOS
+    # después de terminar el último fotograma y retrase el programa.
     command=[player,"-hide_banner","-loglevel","error","-autoexit",
-             "-fs","-noborder","-window_title","StemMIDI Studio - Intro",
-             "-exitonkeydown",str(video)]
+             "-fs","-noborder","-t","11.4",
+             "-window_title","StemMIDI Studio - Intro",str(video)]
     try:
         return subprocess.Popen(command,env=env,stdin=subprocess.DEVNULL,
                                 stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
@@ -124,12 +147,30 @@ def finish_external_intro(process):
     """Esperar solamente los segundos restantes de la intro aprobada."""
     if process is None:
         return os.environ.get("STEMMIDI_INTRO_PLAYED")=="1"
+    is_child=getattr(process,"_stemmidi_intro_child",False)
+    # Hard deadline measured from LAUNCH, not from completion of window
+    # construction. Never leave a stuck video over the main application.
+    timeout=(
+        max(.1,17.5-(time.monotonic()-process._stemmidi_intro_start))
+        if is_child else 25)
     try:
-        status=process.wait(timeout=25)
+        status=process.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait()
+        process.terminate()
+        try:process.wait(timeout=1.5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        if is_child:
+            # A damaged video cannot delay the application again.
+            os.environ["STEMMIDI_INTRO_PLAYED"]="1"
+            return True
         return False
+    if is_child:
+        # Return even if the child failed: unlike R24, NEVER fall back to a
+        # Qt QMediaPlayer inside the main app and re-create its deadlock.
+        os.environ["STEMMIDI_INTRO_PLAYED"]="1"
+        return True
     if status!=0:return False
     os.environ["STEMMIDI_INTRO_PLAYED"]="1"
     return True
@@ -141,7 +182,8 @@ class IntroVideo(QDialog):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("StemMIDI Studio")
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setWindowFlags(
+            Qt.FramelessWindowHint | Qt.Dialog | Qt.WindowStaysOnTopHint)
         self.setStyleSheet("background: #020a1a;")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -159,7 +201,15 @@ class IntroVideo(QDialog):
         QTimer.singleShot(18000, self.finish)
 
     def start(self):
-        self.showFullScreen()
+        # macOS Qt fullscreen creates a new Space and sometimes leaves this
+        # frameless QDialog with 0×0 geometry: sound plays, frames are invisible.
+        # A borderless maximized-size window uses the real screen rectangle.
+        screen=QApplication.primaryScreen()
+        if screen is not None:
+            self.setGeometry(screen.geometry())
+        self.show()
+        self.raise_()
+        self.activateWindow()
         QTimer.singleShot(0, self.player.play)
 
     def _status(self, state):
@@ -177,7 +227,12 @@ class IntroVideo(QDialog):
             super().keyPressEvent(event)
 
     def finish(self):
-        self.player.stop()
+        # On macOS QMediaPlayer.stop can synchronously wait forever for the
+        # FFmpeg backend's semaphore. A dedicated intro child exits just
+        # after this dialog closes, releasing audio/video resources at OS
+        # level without making this synchronous backend call.
+        if sys.platform != "darwin":
+            self.player.stop()
         self.accept()
 
 

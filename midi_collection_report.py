@@ -56,7 +56,7 @@ def main():
                 'pistas','canales','programas_gm','bpm_estimado','compas',
                 'compases_estimados','notas_melodicas','golpes_bateria',
                 'cc64_pedal','cc11_expresion','texto_karaoke_presente',
-                'tipo_de_arreglo_estimado','ritmo_gm_similar',
+                'tipo_de_arreglo_estimado','ritmo_roland_similar',
                 'similitud_ritmica','margen_similitud',
                 'confianza_similitud','duplicado_exacto','genero_verificado'])
             for row in c.execute('SELECT path,status,error,bytes,sha256,tracks,'
@@ -104,7 +104,7 @@ def main():
     for name,n in styles.most_common(30):rows.append('- '+name+': '+str(n))
     rows+=['','## Limitaciones',
         '- Tipo de arreglo NO significa genero musical verificado.',
-        '- Parecido de bateria a un patrón de percusión NO prueba el genero.',
+        '- Parecido de bateria a un patrón GM NO prueba el genero.',
         '- Tempo y compases aproximados si hay cambios posteriores.',
         '- Los archivos zip y rar no han sido descomprimidos.',
         '- Las letras de karaoke no se han guardado.',

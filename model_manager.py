@@ -198,7 +198,7 @@ class ModelManager(QWidget):
         loaded=sum(registry.installed(r) for r in self.records.values())
         self.summary.setText(
             f"{len(rows)} visibles · {len(self.records)} en catálogo · "
-            f"{loaded} completos en disco · directorio {registry.HOME}")
+            f"{loaded} completos en disco · directorio Recuperación/modelos")
         self.detail()
 
     def detail(self):
