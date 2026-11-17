@@ -269,6 +269,15 @@ class PianoRollExpanded(QWidget):
         melody_line=QHBoxLayout();melody_line.setSpacing(5)
         melody_line.addWidget(self.gen_melody,1)
         melody_line.addWidget(self.auto_registers)
+        self.gen_drums=QPushButton("Batería IA")
+        self.gen_drums.setObjectName("compositionBundledDrumGenerator")
+        self.gen_drums.setToolTip(
+            "Generar batería MIDI GM desde el modelo propio integrado"
+            " (944 perfiles aprendidos). Crea una pista de batería"
+            " independiente en canal 10; no descarga archivos ni"
+            " elimina partes de otras pistas. Solo admite compás 4/4.")
+        self.gen_drums.clicked.connect(self.generate_drums)
+        melody_line.addWidget(self.gen_drums)
         right.addLayout(melody_line)
         row=QHBoxLayout();row.setSpacing(5)
         self.progression=QComboBox()
@@ -288,13 +297,13 @@ class PianoRollExpanded(QWidget):
         self.progression.setToolTip(
             "Progresión base cuando se empieza de cero.")
         self.seventh=QCheckBox("7ª")
-        # Perfiles originales portables + huellas Roland opcionales.
-        # La colección Roland nunca sustituye ni es requisito de rock,
+        # Perfiles originales portables + huellas General MIDI opcionales.
+        # La colección General MIDI nunca sustituye ni es requisito de rock,
         # salsa, cumbia, 8 beat y los demás estilos del generador.
         from rhythm_style_catalog import available_styles
         from composition_style_library import grouped_style_names
         self.rhythm_style=QComboBox(self)
-        self.rhythm_style.setObjectName("compositionRolandRhythmStyle")
+        self.rhythm_style.setObjectName("compositionRhythmStyle")
         self.rhythm_style.addItem("Sin patrón",None)
         def heading(title):
             self.rhythm_style.addItem("── "+title+" ──",None)
@@ -305,25 +314,25 @@ class PianoRollExpanded(QWidget):
             for code,label in choices:
                 self.rhythm_style.addItem(label,code)
         available=available_styles()
-        if available:
-            heading("Roland FANTOM · ritmos originales")
-            for alias,source in (("Balada romántica · Roland","balada _1"),
-                                 ("Balada pop · Roland","balada _2")):
-                if source in available:self.rhythm_style.addItem(alias,source)
-            for name in sorted(available,key=str.casefold):
-                label=name.replace("_"," ").strip()
-                if label.lower().startswith("rock"):
-                    label="Rock · Roland ("+label+")"
-                elif label.lower().startswith("hard rock"):
-                    label="Hard rock · Roland ("+label+")"
-                self.rhythm_style.addItem(label,name)
+        integrated=sorted((name for name in available
+                           if available[name].get("kind")=="gm_aggregate"),
+                          key=str.casefold)
+        if integrated:
+            heading("Modelos integrados · General MIDI")
+            for name in integrated:
+                self.rhythm_style.addItem(name,name)
+        private=sorted((name for name in available
+                        if name not in integrated),key=str.casefold)
+        if private:
+            heading("Ritmos privados importados")
+            for name in private:
+                self.rhythm_style.addItem(name.replace("_"," ").strip(),name)
         self.rhythm_style.setMaxVisibleItems(20)
         self.rhythm_style.setToolTip(
-            "72 estilos musicales originales del compositor organizados"
-            " por familia (siempre disponibles), más los 59 ritmos"
-            " Roland FANTOM privados cuando está conectado el disco."
-            " Cambian ataques, acentos y síncopa de acordes y melodía;"
-            " no son pistas completas de batería ni audio de acompañamiento.")
+            "72 estilos del compositor, 13 perfiles estadísticos GM"
+            " integrados y ritmos privados opcionales si existen."
+            " Modifican ataques, acentos y síncopa, sin copiar"
+            " los MIDI originales de entrenamiento.")
         row.addWidget(self.progression,1)
         row.addWidget(QLabel("Estilo"))
         row.addWidget(self.rhythm_style,1)
@@ -1333,6 +1342,86 @@ class PianoRollExpanded(QWidget):
                             "context","lo","hi")},
             enabled=self.auto_quality.isChecked())
         return best_result,best_review,selected
+
+    def generate_drums(self):
+        """Generate genuine channel-10 MIDI with the bundled trained model.
+
+        Regeneration replaces only the requested range on its own drum track.
+        The rest of the project and all other tracks remain unchanged.
+        """
+        e=self._ensure_editor()
+        if e is None:return
+        meter=self._midi_meter(e)
+        if meter!=(4,4):
+            self.info.setText("Batería IA: el modelo entrenado admite 4/4.")
+            return
+        from drum_ai_generator import load_model,generate
+        from secrets import randbits
+        try:
+            model=load_model()
+            start_tick=self._generation_start_tick(e,meter)
+            span=self.bars.value()*e.ticks_per_beat*4
+            selected=self.rhythm_style.currentData()
+            candidate=(self.rhythm_style.currentText() if selected else "")
+            # Only select a verified learned style. No assumed genre from
+            # imported private files or a custom display label.
+            styles=model.get("styles",{})
+            matched=next((style for style in styles
+                         if style.casefold()==candidate.casefold()),None)
+            if matched is None and isinstance(selected,str):
+                normalized=selected.lower()
+                mapping=("rock","pop","jazz","blues","house","country",
+                         "salsa","samba","hip-hop","funk","techno","reggae")
+                matched=next((style for style in styles
+                             if style.lower() in mapping
+                             and style.lower() in normalized),None)
+            seed=int(self.seed.value())
+            if self.random_each.isChecked():
+                seed^=randbits(32)
+            notes=generate(model,matched,bars=self.bars.value(),
+                           ticks_per_beat=e.ticks_per_beat,
+                           start_tick=start_tick,
+                           variation=30,seed=seed)
+            if not notes:raise ValueError("El motor no generó golpes MIDI.")
+        except (OSError,ValueError,KeyError,TypeError) as exc:
+            self.info.setText("Batería IA: "+str(exc))
+            return
+        end_tick=start_tick+span
+        # Exactly one separately editable drum track, regardless of which
+        # melodic channel is currently selected.
+        index=next((i for i,t in enumerate(e.tracks)
+                    if self._track_role(t)=="drums"),None)
+        e.snapshot()
+        if index is None:
+            track={"name":"Batería IA · GM","notes":[],"other":[],
+                   "channels":[9],"program":0,"_composition_role":"drums"}
+            e.tracks.append(track)
+            index=len(e.tracks)-1
+        track=e.tracks[index]
+        retained=[]
+        for old in track["notes"]:
+            if old["end"]<=start_tick or old["start"]>=end_tick:
+                retained.append(old)
+            else:
+                if old["start"]<start_tick:
+                    piece=dict(old,end=start_tick)
+                    if piece["end"]>piece["start"]:retained.append(piece)
+                if old["end"]>end_tick:
+                    piece=dict(old,start=end_tick)
+                    if piece["end"]>piece["start"]:retained.append(piece)
+        e.track_index=index
+        track["channels"]=[9]
+        track["notes"][:]=retained+notes
+        track["notes"].sort(key=lambda n:(n["start"],n["pitch"],n["end"]))
+        e.selected_indices.clear()
+        e.selected_index=None
+        e.update_track_list()
+        self._publish_preview()
+        self.info.setText(
+            f"Batería IA: {len(notes)} golpes MIDI ·"
+            f" {self.bars.value()} compases desde"
+            f" {start_tick//(e.ticks_per_beat*4)+1} · pista {index+1}"
+            f" · canal 10 · Deshacer disponible.")
 
     def generate_melody(self):
         e=self._ensure_editor()

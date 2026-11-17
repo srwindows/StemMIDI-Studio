@@ -20816,7 +20816,7 @@
       }
     }
   },
-  "style_conditioning": "Roland rhythm resemblance ONLY; not music genre",
+  "style_conditioning": "General MIDI rhythm resemblance ONLY; not music genre",
   "training_metrics": {
     "accomp_notes_train": 49715124,
     "accomp_notes_validation": 8233446,

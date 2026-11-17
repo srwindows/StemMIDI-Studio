@@ -4,6 +4,7 @@ El orden/listado se obtiene del banco elegido, nunca de una tabla GM fija.
 Las voces de batería SF2 pertenecen al banco 128.
 """
 from __future__ import annotations
+import os
 from functools import lru_cache
 from pathlib import Path
 import re
@@ -11,7 +12,16 @@ import struct
 
 
 def system_soundfont():
-    """SF2 de TiMidity activo en Debian; None si no se puede determinar."""
+    """Banco GM integrado en macOS o SoundFont configurado en Linux."""
+    bundled=os.environ.get("STEMMIDI_SOUNDFONT","").strip()
+    if bundled:
+        candidate=Path(bundled).expanduser()
+        if candidate.is_file():
+            return candidate.resolve()
+    from studio_paths import resource_root
+    candidate=resource_root(__file__)/"soundfonts"/"FluidR3_GM.sf2"
+    if candidate.is_file():
+        return candidate.resolve()
     def scan(config, seen):
         path=Path(config)
         if path in seen or not path.is_file():return None

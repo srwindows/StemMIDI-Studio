@@ -104,13 +104,24 @@ class SharedProfessionalDock(QWidget):
         if kind=="mixer":
             # La pestaña tiene VU de pista y master + transporte real,
             # igual que la tarjeta ampliada; siempre una sola mezcla activa.
-            from project_mixer_expanded import ProjectMixerTransport
-            self.transport=ProjectMixerTransport(self.view,self.content)
-            self.transport.setMinimumHeight(192)
-            self.transport.setMaximumHeight(226)
+            if getattr(self.view,"is_pro_console",False):
+                from studio_pro_console import ProConsoleTransport
+                self.transport=ProConsoleTransport(self.view,self.content)
+                self.transport.setFixedHeight(37)
+                top.hide()
+                root.setContentsMargins(1,1,1,1)
+                root.setSpacing(1)
+            else:
+                from project_mixer_expanded import ProjectMixerTransport
+                self.transport=ProjectMixerTransport(self.view,self.content)
+                self.transport.setMinimumHeight(200)
+                self.transport.setMaximumHeight(272)
         self.content_layout.insertWidget(0,self.view,1)
         if self.transport is not None:
-            self.content_layout.addWidget(self.transport,0)
+            if getattr(self.view,"is_pro_console",False):
+                self.view.install_console_transport(self.transport)
+            else:
+                self.content_layout.addWidget(self.transport,0)
         self.view.show()
         if kind=="midi":
             self._make_inspector()
@@ -202,13 +213,22 @@ class SharedProfessionalDock(QWidget):
         if self._in_float:return
         self._in_float=True
         if self.kind=="mixer" and self.transport is not None:
-            self.transport.live.stop()
-            self.transport.timer.stop()
-            self.transport.hide()
+            if getattr(self.view,"is_pro_console",False):
+                # La barra acompaña a la consola al abrir la ventana flotante.
+                self.transport.live.stop()
+            else:
+                self.transport.live.stop()
+                self.transport.timer.stop()
+                self.transport.hide()
         self.content_layout.removeWidget(self.view)
         self.view.setParent(self.expanded.extra)
         self.expanded.layout.addWidget(self.view,1)
         self.view.show()
+        if self.kind=="mixer" and getattr(self.view,"is_pro_console",False):
+            # Reparentar la consola puede ocultar los hijos Qt nativos.
+            # El transporte único debe seguir accesible en la flotante.
+            self.transport.show()
+            QTimer.singleShot(0,self.transport.show)
         self.content.hide()
         self.placeholder.show()
 

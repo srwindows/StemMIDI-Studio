@@ -162,8 +162,11 @@ class ExpandedSeparator:
         params.setSpacing(4)
         params.addWidget(QLabel("Detalle"))
         self.voice_detail=QComboBox(stems_panel)
-        self.voice_detail.addItem("Normal",8)
-        self.voice_detail.addItem("Alto",16)
+        # Solapamiento de RoFormer 2–50 admitido por audio-separator 0.22.
+        # Mantener una lista numérica exacta para la pestaña avanzada.
+        for overlap in range(2,51):
+            suffix=" · Normal" if overlap==8 else " · Alto" if overlap==16 else ""
+            self.voice_detail.addItem(str(overlap)+suffix,overlap)
         self.voice_detail.setToolTip(
             "Solapamiento MDXC: alto procesa más ventanas y tarda más.")
         self.voice_detail.setFixedWidth(83)
@@ -324,7 +327,11 @@ class ExpandedSeparator:
         self.run=QPushButton("▶ Separar pistas")
         self.run.setObjectName("primary")
         self.cancel=QPushButton("Detener")
-        one.addLayout(row(self.run,self.cancel))
+        self.view_log=QPushButton("Ver registro…")
+        self.view_log.setToolTip(
+            "Mostrar el diagnóstico real y abrir su carpeta en el disco trabajos.")
+        self.view_log.clicked.connect(self.sep.show_diagnostic_log)
+        one.addLayout(row(self.run,self.cancel,self.view_log))
         self.status=QLabel("Modelo preparado")
         self.status.setObjectName("muted")
         self.status.setWordWrap(True)
@@ -517,10 +524,23 @@ class ExpandedSeparator:
 
     def start_vocal_split(self):
         mode=self.voice_mode.currentData()
+        engine={}
+        for key,default,cast in (
+            ("mdxc_batch_size",1,int),("mdxc_pitch_shift",0,int),
+            ("mdxc_segment_size",256,int),
+            ("mdxc_override_model_segment_size",False,bool),
+            ("invert_spect",False,bool),("use_soundfile",False,bool),
+            ("normalization",.90,float),("sample_rate",44100,int),
+            ("mp3_bitrate",320,int)):
+            if cast is bool:
+                engine[key]=str(self.voice_settings.value("engine_"+key,default)).lower() in ("true","1")
+            else:
+                try:engine[key]=cast(self.voice_settings.value("engine_"+key,default))
+                except (ValueError,TypeError):engine[key]=default
         if mode and self.voice_task.separate(
                 self.home,mode,output_format=self.voice_format.currentText(),
                 overlap=self.voice_detail.currentData(),
-                amplification=self.voice_boost.value()):
+                amplification=self.voice_boost.value(),settings=engine):
             for button in self.voice_results:button.hide()
 
     def vocal_results_ready(self,paths,autoplay=True):

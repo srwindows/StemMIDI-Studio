@@ -50,8 +50,12 @@ def render(session,destination,stop_check=lambda:False,meter_file=None):
     if len(clips)>160:raise ValueError("Demasiados clips para una mezcla")
     target=Path(destination)
     target.parent.mkdir(parents=True,exist_ok=True)
-    sf2=Path(os.environ.get("STEMMIDI_COMPOSITOR_SF2",
-                             "/usr/share/sounds/sf2/FluidR3_GM.sf2"))
+    from soundfont_catalog import system_soundfont
+    selected=os.environ.get("STEMMIDI_COMPOSITOR_SF2","").strip()
+    default=system_soundfont()
+    if not selected and default is None:
+        raise FileNotFoundError("No hay banco General MIDI SF2 disponible")
+    sf2=Path(selected) if selected else default
     with tempfile.TemporaryDirectory(prefix="compositor_render_") as td:
         temporary=Path(td)
         inputs=[]

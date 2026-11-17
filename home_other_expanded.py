@@ -398,14 +398,51 @@ class ExpandedModule:
             self.status.hide()
             self.details.hide()
         elif self.kind=="drums":
-            self.add_combo("Batería del proyecto",h.drum_source)
+            mod=h._drum_module
+            # Una ÚNICA fila de dos parejas etiqueta/control: evitar los
+            # grandes huecos y el solapamiento de las filas anteriores.
+            models_row=self.line()
+            models_row.setSpacing(6)
+            source_title=QLabel('Batería',self.extra)
+            source_title.setFixedWidth(49)
+            source_title.setAlignment(Qt.AlignLeft|Qt.AlignVCenter)
+            models_row.addWidget(source_title)
+            source_choice=QComboBox(self.extra)
+            source_choice.setFixedWidth(235)
+            source_choice.setProperty('preserveComboWidth',True)
+            source_choice.setSizePolicy(QSizePolicy.Fixed,QSizePolicy.Fixed)
+            source_choice.setToolTip('Fuente de batería procedente del proyecto o de una importación')
+            models_row.addWidget(source_choice,0)
+            self.proxies.append((h.drum_source,source_choice,'combo'))
+            source_choice.currentIndexChanged.connect(lambda index:
+                h.drum_source.setCurrentIndex(index) if not self._updating and index>=0 else None)
+            motor_caption=QLabel('Motor IA',self.extra)
+            motor_caption.setFixedWidth(59)
+            motor_caption.setAlignment(Qt.AlignLeft|Qt.AlignVCenter)
+            models_row.addWidget(motor_caption)
+            # El flotante se construye ANTES que DrumModule. En refresh()
+            # se vincula el combo con el controlador de la pestaña.
+            self.drum_model_choice=QComboBox(self.extra)
+            self.drum_model_choice.setFixedWidth(305)
+            self.drum_model_choice.setProperty('preserveComboWidth',True)
+            self.drum_model_choice.setSizePolicy(QSizePolicy.Fixed,QSizePolicy.Fixed)
+            self.drum_model_choice.setToolTip('Selecciona el modelo MDX23C real que utilizará el motor')
+            models_row.addWidget(self.drum_model_choice,0)
+            models_row.addStretch(1)
+            self.drum_model_choice.currentIndexChanged.connect(self.select_drum_model)
+            self.drum_model_status=QLabel(self.extra)
+            self.drum_model_status.setObjectName('muted')
+            self.drum_model_status.setWordWrap(False)
+            self.drum_model_status.setFixedHeight(20)
+            self.drum_model_status.setToolTip('Estado y modelo activo de MDX23C')
+            self.layout.addWidget(self.drum_model_status)
             self.add_actions(("Importar batería…",self.import_drum),
-                             ("Instalar IA",self.install_drum),
+                             ("Cambiar / instalar IA…",self.install_drum),
+                             ("Importar modelo…",self.import_drum_engine),
                              ("Desglosar",self.run_drum_here),
-                             ("■ Cancelar operación",self.cancel_drum_here))
+                             ("■ Cancelar",self.cancel_drum_here))
             from drum_module import PARTS
             self.drum_pieces={}
-            mod=h._drum_module
             if mod is not None:
                 mod.progressChanged.connect(self.refresh_drum_pieces)
             # El control adicional requiere el alto que antes ocupaban dos
@@ -422,11 +459,19 @@ class ExpandedModule:
             notice.setObjectName("muted")
             self.layout.addWidget(notice)
             columns=QHBoxLayout()
-            columns.addWidget(QLabel("Guardar / pista"),2)
-            columns.addWidget(QLabel("Avance IA común (real)"),2)
-            columns.addWidget(QLabel("Escuchar"),1)
-            columns.addWidget(QLabel("Nivel"),2)
-            columns.addWidget(QLabel("Mute · Solo"),1)
+            columns.setSpacing(5)
+            def header(text,width):
+                caption=QLabel(text,self.extra)
+                caption.setFixedWidth(width)
+                columns.addWidget(caption)
+            header('Guardar / pista',105)
+            header('Avance IA común (real)',300)
+            header('Estado',77)
+            header('Play',43)
+            header('Nivel',250)
+            header('M',31)
+            header('S',31)
+            columns.addStretch(1)
             self.layout.addLayout(columns)
             for part in PARTS:
                 line=QHBoxLayout()
@@ -434,28 +479,28 @@ class ExpandedModule:
                 line.setSpacing(5)
                 check=QCheckBox(part,self.extra)
                 check.setChecked(True)
-                check.setMinimumWidth(93)
-                line.addWidget(check,2)
+                check.setFixedWidth(105)
+                line.addWidget(check)
                 progress=QProgressBar(self.extra)
                 progress.setRange(0,100)
                 progress.setValue(0)
                 progress.setTextVisible(False)
-                progress.setMinimumWidth(85)
-                line.addWidget(progress,2)
+                progress.setFixedWidth(300)
+                line.addWidget(progress)
                 state=QLabel("Pendiente",self.extra)
-                state.setMinimumWidth(70)
-                line.addWidget(state,0)
+                state.setFixedWidth(77)
+                line.addWidget(state)
                 listen=self.action("▶",lambda checked=False,p=part:self.listen_drum_part(p))
                 listen.setEnabled(False)
-                listen.setFixedWidth(35)
+                listen.setFixedWidth(43)
                 listen.setToolTip("Escuchar el archivo real de "+part)
                 line.addWidget(listen)
                 gain=QSlider(Qt.Horizontal,self.extra)
                 gain.setRange(-36,12)
                 gain.setValue(0)
-                gain.setMinimumWidth(72)
+                gain.setFixedWidth(198)
                 gain.valueChanged.connect(lambda value,p=part:self.set_drum_mix(p,"gain",value))
-                line.addWidget(gain,2)
+                line.addWidget(gain)
                 gain_txt=QLabel("0 dB",self.extra)
                 gain_txt.setFixedWidth(47)
                 line.addWidget(gain_txt)
@@ -465,6 +510,7 @@ class ExpandedModule:
                     control.setCheckable(True)
                     control.setFixedWidth(31)
                     line.addWidget(control)
+                line.addStretch(1)
                 self.layout.addLayout(line)
                 self.drum_pieces[part]=dict(check=check,progress=progress,
                     state=state,listen=listen,gain=gain,gain_txt=gain_txt,
@@ -493,8 +539,8 @@ class ExpandedModule:
         elif self.kind=="mixer":
             # Mezclador verdadero por ARCHIVO, no por una lista de nombres.
             # Sin presets, botones duplicados ni preescucha individual.
-            from project_mixer_expanded import ProjectMixerView
-            self.project_mixer=ProjectMixerView(h,self.extra)
+            from studio_pro_console import StudioProConsole
+            self.project_mixer=StudioProConsole(h,self.extra)
             self.layout.addWidget(self.project_mixer,1)
             self.layout.itemAt(0).widget().hide()  # título redundante
             self.status.hide()
@@ -572,7 +618,23 @@ class ExpandedModule:
 
     def install_drum(self):
         mod=self.home._drum_module
-        if mod is not None:mod.install_model()
+        if mod is not None:
+            mod.install_model()
+            self.refresh()
+
+    def import_drum_engine(self):
+        mod=self.home._drum_module
+        if mod is not None:mod.import_custom_model()
+
+    def select_drum_model(self,index):
+        mod=self.home._drum_module
+        if mod is None or index<0:return
+        filename=self.drum_model_choice.itemData(index)
+        target=mod.model.findData(filename)
+        if target>=0 and target!=mod.model.currentIndex() and mod.process is None:
+            mod.model.setCurrentIndex(target)
+            mod._update_model_state()
+            self.refresh()
 
     def run_drum_here(self):
         mod=self.home._drum_module
@@ -767,7 +829,9 @@ class ExpandedModule:
 
     def filter_results(self,_=None):
         if self.kind!="results":return
-        table=self.home.files
+        bridge=getattr(self,'parity_bridge',None)
+        table=(self.home.main.results_tab.table
+               if bridge is not None and bridge.docked else self.home.files)
         term=self.search.text().casefold().strip()
         kind=self.result_type.currentText()
         for row in range(table.rowCount()):
@@ -823,9 +887,33 @@ class ExpandedModule:
                 self.midi_browser.refresh()
             elif self.kind=="drums":
                 self.refresh_drum_pieces()
-                self.status.setText(h._drum_module.status.text()
-                    if h._drum_module is not None else h.drum_state.text())
-                self.details.setText("MDX23C: "+("instalado" if h._drum_module and h._drum_module.model_ready() else "pendiente"))
+                mod=h._drum_module
+                if mod is not None:
+                    mod._update_model_state()
+                    combo=self.drum_model_choice
+                    if combo.count()!=mod.model.count() or any(
+                        combo.itemData(i)!=mod.model.itemData(i)
+                        for i in range(combo.count())):
+                        previous=combo.blockSignals(True)
+                        combo.clear()
+                        for i in range(mod.model.count()):
+                            combo.addItem(mod.model.itemText(i),mod.model.itemData(i))
+                        combo.blockSignals(previous)
+                    if combo.currentIndex()!=mod.model.currentIndex() and not combo.view().isVisible():
+                        previous=combo.blockSignals(True)
+                        combo.setCurrentIndex(mod.model.currentIndex())
+                        combo.blockSignals(previous)
+                    combo.setEnabled(mod.process is None)
+                    state=('LISTO' if mod.model_ready() and mod.engine()
+                           else 'SIN MODELO' if not mod.model_ready()
+                           else 'MOTOR NO DISPONIBLE')
+                    summary=('MDXNet · '+state+' · 6 pistas · Modelo: '+mod.model_filename())
+                    width=max(100,self.extra.width()-35)
+                    self.drum_model_status.setText(
+                        self.drum_model_status.fontMetrics().elidedText(summary,Qt.ElideMiddle,width))
+                    self.drum_model_status.setToolTip(summary+'\n'+mod.model_state.toolTip())
+                self.status.setText(mod.status.text() if mod is not None else h.drum_state.text())
+                self.details.setText("MDX23C: "+("instalado y disponible" if mod and mod.model_ready() and mod.engine() else "no disponible"))
             elif self.kind=="vocal":
                 if self.vocal_studio is not None:
                     self.vocal_studio.refresh()
@@ -846,7 +934,10 @@ class ExpandedModule:
                 self.details.setText("Zoom aplicado directamente a la forma de onda original.")
             elif self.kind=="results":
                 self.filter_results()
-                self.status.setText(f"{h.files.rowCount()} resultados en esta tarea")
+                source=(self.home.main.results_tab.table
+                        if getattr(getattr(self,'parity_bridge',None),'docked',False)
+                        else h.files)
+                self.status.setText(f"{source.rowCount()} resultados en esta tarea")
                 self.details.setText("Selecciona una o varias filas; guarda sin sobrescribir originales.")
             elif self.kind=="info":
                 self.info_expanded.refresh_runtime()

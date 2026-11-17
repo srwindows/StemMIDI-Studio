@@ -39,7 +39,8 @@ from midi_refine import refine_events, note_at_retrigger
 from basic_pitch import ICASSP_2022_MODEL_PATH
 from basic_pitch.inference import Model, predict
 
-ROOT = Path(__file__).resolve().parent
+from studio_paths import workspace_root,ia_executable
+ROOT = workspace_root(__file__)
 ACTIVE_CHILD = None
 
 
@@ -421,13 +422,15 @@ def auto_separate_audio(source, opts, outdir, name):
     model = {"4": "htdemucs.yaml", "6": "htdemucs_6s.yaml"}.get(
         str(opts.get("separation_stems","4")), "htdemucs.yaml")
     modeldir=ROOT/"modelos"
-    sep=ROOT/"entorno_ia"/"bin"/"audio-separator"
+    sep=ia_executable(__file__)
     if not sep.is_file():
         raise FileNotFoundError("No se encuentra el motor de separación audio-separator")
     stems_dir = outdir / (name + "_STEMS_" + __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S"))
     stems_dir.mkdir(parents=True, exist_ok=True)
     emit("separating", model=model, folder=str(stems_dir))
-    cmd=[sys.executable, str(sep), str(source),
+    # audio-separator es un ejecutable/launcher (shell en macOS), no un
+    # módulo Python: pasarlo a sys.executable daba SyntaxError.
+    cmd=[str(sep), str(source),
          "--model_filename",model,
          "--model_file_dir",str(modeldir),
          "--output_dir",str(stems_dir),
@@ -543,6 +546,14 @@ def _handle(opts, originals, outdir, scratch):
         chosen_model=Path(chosen_model).resolve()
     else:
         chosen_model=ICASSP_2022_MODEL_PATH
+        if sys.platform=="darwin":
+            # La ruta predeterminada de Basic Pitch en macOS es CoreML.
+            # En Sonoma 14.0 / macOS Intel, predict() provoca SIGFPE.
+            # Usar el ONNX oficial del mismo modelo, probado con CPUExecutionProvider.
+            onnx=Path(ICASSP_2022_MODEL_PATH).parent/"nmp.onnx"
+            if not onnx.is_file():
+                raise FileNotFoundError("Falta el modelo oficial Basic Pitch ONNX para macOS")
+            chosen_model=onnx
     report = []
     source_rms = None
     if should_split:

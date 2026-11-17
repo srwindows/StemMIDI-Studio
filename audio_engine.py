@@ -178,9 +178,9 @@ class CaptureWorker(QThread):
                 self.live_listen_state.emit(True,"Escucha procesada activa")
             else:
                 self.live_listen_state.emit(False,"Escucha procesada detenida")
-        if requested and player.process is not None:
+        if requested and player.active:
             player.feed(pcm)
-            if player.process is None:
+            if not player.active:
                 with self._lock:
                     self._listen_requested=""
                 self.live_listen_state.emit(False,player.status)

@@ -39,7 +39,7 @@ def write_report(conn,refs,number):
     report['source']=str(SOURCE)
     report['source_read_only']=True
     report['total_midi_kar_found']=number
-    report['roland_reference_count']=len(refs)
+    report['gm_reference_count']=len(refs)
     report['records']=conn.execute('SELECT COUNT(*) FROM canciones').fetchone()[0]
     report['valid']=conn.execute("SELECT COUNT(*) FROM canciones WHERE status='ok'").fetchone()[0]
     report['invalid']=conn.execute("SELECT COUNT(*) FROM canciones WHERE status!='ok'").fetchone()[0]
@@ -62,7 +62,7 @@ def write_report(conn,refs,number):
         'SELECT status,COUNT(*) FROM archives GROUP BY status'))
     report['zip_midi_entries']=conn.execute(
         "SELECT COALESCE(SUM(midi_entries),0) FROM archives WHERE status='ok'").fetchone()[0]
-    report['top_roland_similar']=[
+    report['top_gm_similar']=[
         dict(name=n,count=c,mean_similarity=round(v,4))
         for n,c,v in conn.execute('''SELECT approximate_style,
              COUNT(*),AVG(similarity) FROM canciones

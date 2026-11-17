@@ -45,7 +45,7 @@ modelo opcional de aprendizaje sobre datos declarados CC0, en
 composition_learned_model.json.
 
 **No se distribuyen** los mas de 20.000 ficheros MIDI/KAR particulares
-usados para el aprendizaje, ni ninguna de las 59 bases ritmicas Roland.
+usados para el aprendizaje, ni ninguna de las 59 bases ritmicas General MIDI.
 Tampoco grabaciones, proyectos ni configuraciones personales.
 
 Ver la [ficha tecnica y procedencia del modelo](docs/MODELO_MUSICAL.md).
@@ -65,7 +65,7 @@ software open source OSI**, y restringe el uso comercial. Las aportaciones
 de terceros, los modelos externos y los datos CC0 mantienen sus condiciones
 propias. Si se decide pasar a MIT/GPL, sera una decision de licencia separada.
 
-No se conceden derechos sobre las canciones ni los ritmos Roland originales
+No se conceden derechos sobre las canciones ni los ritmos General MIDI originales
 que no forman parte de esta distribucion.
 
 ## Notas de seguridad
@@ -78,3 +78,16 @@ que no forman parte de esta distribucion.
 
 Este repositorio distribuye el **codigo fuente de la version 1.1.0**. No incluye actualmente
 una compilacion Windows .exe ni un instalador macOS .dmg verificados.
+
+## Corrección Debian 1.1.1 — 17 de noviembre de 2026
+
+- Incluye de serie los cuatro modelos estadísticos propios: composición
+  clásica, Markov multinstrumental, batería con 944 perfiles anonimizados
+  y ritmos General MIDI con 13 agregados.
+- El Piano Roll permite generar batería MIDI independiente en canal 10,
+  respetando el compás 4/4 y las secciones que ya estén compuestas.
+- La biblioteca de ritmos GM es accesible sin conexión ni disco externo.
+- SciPy está incorporado al paquete Debian para que el motor de mezcla
+  no falle durante el arranque por una dependencia ausente.
+- No se distribuyen MIDI/KAR ni audio privado de entrenamiento, ni los
+  pesos externos de otros desarrolladores.

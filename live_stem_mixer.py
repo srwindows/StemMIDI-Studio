@@ -1,8 +1,8 @@
-"""Reproducción continua multipista: mute en vivo mediante FFmpeg azmq.
+"""Reproducción multipista real.
 
-Audio de los stems originales en un único flujo; las casillas solo cambian
-filtros volume dinámicos, nunca reconstruyen mezcla ni reinician el reloj.
-FFplay usa la misma salida PulseAudio elegida por el programa.
+Usa el filtro azmq si FFmpeg lo incluye. De lo contrario, conserva la
+selección M/S y reanuda el audio desde la posición actual al modificarla.
+La salida se elige según CoreAudio/macOS o PulseAudio/Linux.
 """
 from __future__ import annotations
 
@@ -12,16 +12,30 @@ import math
 import os
 import queue
 import random
+import re
 import signal
 import subprocess
+import sys
 import threading
 import time
+from functools import lru_cache
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
 from audio_import import probe_audio
 from preview_player import AudioRoute
+
+
+@lru_cache(maxsize=1)
+def _supports_azmq():
+    """Detectar capacidades del FFmpeg realmente distribuido, no asumirlas."""
+    try:
+        result=subprocess.run(["ffmpeg","-hide_banner","-filters"],
+                              capture_output=True,text=True,timeout=8)
+        return result.returncode==0 and bool(re.search(r"\bazmq\b",result.stdout))
+    except (OSError,subprocess.TimeoutExpired):
+        return False
 
 
 class _LiveFilterCommands:
@@ -154,19 +168,26 @@ class LiveStemMixer(QObject):
                 f"aformat=sample_fmts=fltp:channel_layouts=stereo,"
                 f"volume@s{i}={volume}:eval=frame[a{i}]")
         joined="".join(f"[a{i}]" for i in range(len(inputs)))
-        # Limitar los picos de la suma, manteniendo independencia del mute.
-        filters.append(f"{joined}amix=inputs={len(inputs)}:"
-                       "duration=longest:dropout_transition=0:normalize=0,"
-                       "alimiter=limit=0.95,"
-                       f"azmq=bind_address=tcp\\\\://127.0.0.1\\\\:{self._port}[out]")
+        supports_live_commands=_supports_azmq()
+        if supports_live_commands:
+            # Limitar los picos de la suma, manteniendo independencia del mute.
+            filters.append(f"{joined}amix=inputs={len(inputs)}:"
+                           "duration=longest:dropout_transition=0:normalize=0,"
+                           "alimiter=limit=0.95,"
+                           f"azmq=bind_address=tcp\\\\://127.0.0.1\\\\:{self._port}[out]")
+        else:
+            filters.append(f"{joined}amix=inputs={len(inputs)}:"
+                           "duration=longest:dropout_transition=0:normalize=0,"
+                           "alimiter=limit=0.95[out]")
         command+=["-filter_complex",";".join(filters),"-map","[out]",
                   "-vn","-ar","48000","-ac","2","-f","f32le","pipe:1"]
         sink=["ffplay","-nodisp","-autoexit","-loglevel","error",
               "-f","f32le","-ar","48000","-ch_layout","stereo","-i","pipe:0"]
         env=os.environ.copy()
-        env.setdefault("SDL_AUDIODRIVER","pulseaudio")
+        env.setdefault("SDL_AUDIODRIVER",
+                       "coreaudio" if sys.platform=="darwin" else "pulseaudio")
         device=AudioRoute.current_id()
-        if device:env["PULSE_SINK"]=device
+        if device and sys.platform!="darwin":env["PULSE_SINK"]=device
         if env.get("STEMMIDI_TEST_DUMMY_AUDIO")=="1":
             env["SDL_AUDIODRIVER"]="dummy"
         try:
@@ -184,7 +205,8 @@ class LiveStemMixer(QObject):
             return False
         self._decoder=decoder
         self._sink=sink_proc
-        self._commands=_LiveFilterCommands(self._port)
+        self._commands=(_LiveFilterCommands(self._port)
+                        if supports_live_commands else None)
         self._start_ms=start_ms
         self._position_ms=start_ms
         self._anchor=time.monotonic()
@@ -200,6 +222,18 @@ class LiveStemMixer(QObject):
         else:self._selected.discard(name)
         if self._commands is not None:
             self._commands.update(self._names.index(name),enabled)
+        elif self.running:
+            # FFmpeg compilado sin azmq: cambiar M/S sin perder la posición.
+            # Hay una breve reapertura de la salida, pero nunca se ignora
+            # el cambio ni se deja una pista sonando cuando está en Mute.
+            at=self.position()
+            was_paused=self._paused
+            tracks=list(zip(self._names,self._files))
+            selection=set(self._selected)
+            if not self.start(tracks,selection,start_ms=at):
+                self.error.emit("No se pudo aplicar el cambio M/S en la mezcla")
+                return False
+            if was_paused:self.pause()
         self.changed.emit()
         return True
 

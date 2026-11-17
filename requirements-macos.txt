@@ -1,0 +1,14 @@
+# StemMIDI Studio GUI — macOS Intel 14+, Python 3.12.
+# No incluir frameworks de IA aquí: el entorno separado utiliza Python 3.11.
+PySide6==6.8.3
+numpy==2.5.4
+scipy==1.18.1
+mido==1.3.3
+soundfile==0.14.0
+sounddevice==0.5.6
+soundcard==0.4.6
+psutil==7.2.2
+mutagen==1.48.1
+pydub==0.25.1
+# Herramienta de construcción (solo en máquina de compilación)
+pyinstaller==6.22.3

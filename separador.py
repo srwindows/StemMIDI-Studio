@@ -10,6 +10,7 @@ import file_dialogs
 import re
 import shutil
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -27,17 +28,37 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from studio_paths import workspace_root
+from studio_paths import workspace_root,ia_python,ia_executable
 ROOT = workspace_root(__file__)
 OUTPUT_DIR = ROOT / "pistas_separadas"
 MODELS_DIR = ROOT / "modelos"
 CACHE_DIR = ROOT / "cache_ia"
-SEPARATOR = ROOT / "entorno_ia" / "bin" / "audio-separator"
-PYTHON = ROOT / "entorno_ia" / "bin" / "python"
+SEPARATOR = ia_executable(__file__)
+PYTHON = ia_python(__file__)
 PREFERENCES = ROOT / "preferencias_separador.json"
 
+
+def diagnostic_directory():
+    """Registros persistentes: disco de trabajo externo, respaldo local seguro."""
+    candidates=[]
+    if Path("/Volumes/trabajos").is_mount():
+        candidates.append(Path("/Volumes/trabajos/StemMIDI_Studio_Trabajo_Mac/registros_separacion"))
+    candidates.append(ROOT/"registros_separacion")
+    candidates.append(Path.home()/"Library/Logs/StemMIDI Studio/separacion")
+    for folder in candidates:
+        try:
+            folder.mkdir(parents=True,exist_ok=True)
+            with (folder/".comprobacion_escritura").open("w") as test:
+                test.write("ok")
+            (folder/".comprobacion_escritura").unlink(missing_ok=True)
+            return folder
+        except OSError:
+            continue
+    return None
+
+
 MODELS = {
-    "2 pistas · ESTUDIO — MelBand Roformer (voz + instrumental)": "vocals_mel_band_roformer.ckpt",
+    "2 pistas · ESTUDIO — MelBand Roformer (voz + instrumental)": "model_mel_band_roformer_ep_3005_sdr_11.4360.ckpt",
     "2 pistas · RÁPIDO — MDX (voz + instrumental)": "UVR-MDX-NET-Inst_HQ_3.onnx",
     "4 pistas · ESTUDIO — Demucs FT (voz, batería, bajo, otros)": "htdemucs_ft.yaml",
     "4 pistas · RÁPIDO — Demucs (voz, batería, bajo, otros)": "htdemucs.yaml",
@@ -71,10 +92,13 @@ class SeparadorDialog(QDialog):
         self.cancelled = False
         self.steps = 0
         self.sample_setting = 44100  # valor inicial; preferencias guardadas tienen prioridad
+        self.engine_parameters = {}  # ajustes por arquitectura, sin motores duplicados
         self.started_at = None
         self.latest_outputs = []
         self.log_lines = 0
         self.current_command = []
+        self.log_path = None
+        self._last_engine_error = ''
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.tick)
         self.timer.start(1000)
@@ -97,20 +121,23 @@ class SeparadorDialog(QDialog):
         """Solo ofrece modelos instalados que producen stems generales válidos."""
         from model_registry import catalog,installed,is_general,model_active
         previous=self.profile.currentText()
+        previous_filename=MODELS.get(previous)
         for label in list(MODELS):
-            if label.startswith("IA instalada · "):
+            if label.startswith(("IA instalada · ","IA importada · ")):
                 MODELS.pop(label,None)
         for rec in catalog().values():
             if installed(rec) and is_general(rec):
-                label="IA instalada · "+rec["name"]+" ("+rec["filename"]+")"
+                label=("IA importada · " if rec.get('external') else "IA instalada · ")+rec["name"]+" ("+rec["filename"]+")"
                 MODELS[label]=rec["filename"]
         self.profile.blockSignals(True)
         self.profile.clear()
         self.profile.addItems(MODELS)
         active=model_active().get("general")
         target=next((key for key,val in MODELS.items()
-                     if key.startswith("IA instalada · ") and val==active),None)
-        target=target or previous
+                     if key.startswith(("IA instalada · ","IA importada · "))
+                     and val==active),None)
+        target=target or (previous if previous in MODELS else
+            next((key for key,val in MODELS.items() if val==previous_filename),None))
         if target in MODELS:
             self.profile.setCurrentText(target)
         self.profile.blockSignals(False)
@@ -123,6 +150,7 @@ class SeparadorDialog(QDialog):
                 "normalization":getattr(self,"norm_setting",.9),
                 "amplification":getattr(self,"amp_setting",0.0),
                 "sample_rate":getattr(self,"sample_setting",44100),
+                "engine_parameters":dict(getattr(self,"engine_parameters",{})),
                 "requested_stems":(self.requested_stems()
                     if hasattr(self,"requested_stems") else [])}
 
@@ -138,6 +166,11 @@ class SeparadorDialog(QDialog):
                        min(1.0,float(data[key]))))
         if data.get("sample_rate") in (44100,48000):
             self.sample_setting=int(data["sample_rate"])
+        if "engine_parameters" in data:
+            from separation_engine_parameters import sanitize
+            self.engine_parameters=sanitize(data["engine_parameters"])
+        refresher=getattr(self,'_advanced_controls',{}).get('engine_refresh')
+        if refresher:refresher()
         if hasattr(self,"stem_checks") and isinstance(data.get("requested_stems"),list):
             requested=set(data["requested_stems"])
             for name,check in self.stem_checks.items():
@@ -170,6 +203,8 @@ class SeparadorDialog(QDialog):
             self.norm_setting=float(data.get("normalization",0.9))
             self.amp_setting=float(data.get("amplification",0.0))
             self.sample_setting=int(data.get("sample_rate",44100))
+            from separation_engine_parameters import sanitize
+            self.engine_parameters=sanitize(data.get("engine_parameters",{}))
             if data.get("folder"):
                 self.dest_edit.setText(str(data["folder"]))
             if data.get("audio_path") and Path(data["audio_path"]).is_file():
@@ -194,6 +229,7 @@ class SeparadorDialog(QDialog):
             "normalization": getattr(self,"norm_setting",0.9),
             "amplification": getattr(self,"amp_setting",0.0),
             "sample_rate": getattr(self,"sample_setting",44100),
+            "engine_parameters":dict(getattr(self,"engine_parameters",{})),
         }
         try:
             PREFERENCES.write_text(json.dumps(prefs, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -375,7 +411,62 @@ class SeparadorDialog(QDialog):
     def append_log(self, value):
         for line in str(value).replace("\r", "\n").splitlines():
             if line.strip():
-                self.log.appendPlainText(line[:1000])
+                entry=line[:1000]
+                self.log.appendPlainText(entry)
+                if self.log_path is not None:
+                    try:
+                        with self.log_path.open('a',encoding='utf-8') as stream:
+                            stream.write(entry+'\n')
+                    except OSError:
+                        pass
+                if re.search(r'(^|\\s)(ValueError|RuntimeError|SyntaxError|FileNotFoundError|PermissionError|OSError):|^ERROR:',entry):
+                    if not self._last_engine_error or not entry.startswith("ERROR: la etapa terminó"):
+                        self._last_engine_error=entry.strip()
+
+    def show_diagnostic_log(self):
+        """Abrir el inspector o el registro guardado de la última prueba."""
+        folder=diagnostic_directory()
+        if self.log_path is None and folder is not None:
+            files=sorted(folder.glob("separacion_*.log"),key=lambda path:path.stat().st_mtime,reverse=True)
+            if files:self.log_path=files[0]
+        inspector=getattr(self,"motor_dialog",None)
+        if inspector is not None and self.log.toPlainText().strip():
+            inspector.refresh_log()
+            inspector.show()
+            inspector.raise_()
+            inspector.activateWindow()
+            return
+        if self.log_path is None:
+            QMessageBox.information(self,"Registro de separación",
+                "Todavía no hay un registro. Se guardará automáticamente al iniciar la separación.")
+            return
+        try:
+            content=self.log_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            QMessageBox.warning(self,"Registro no disponible",str(exc))
+            return
+        dialog=QDialog(self)
+        dialog.setWindowTitle("Registro de separación · "+self.log_path.name)
+        dialog.resize(760,490)
+        box=QVBoxLayout(dialog)
+        path_label=QLabel(str(self.log_path))
+        path_label.setWordWrap(True)
+        box.addWidget(path_label)
+        view=QPlainTextEdit(dialog)
+        view.setReadOnly(True)
+        view.setPlainText(content)
+        box.addWidget(view,1)
+        buttons=QHBoxLayout()
+        open_dir=QPushButton("Abrir carpeta del registro")
+        open_dir.clicked.connect(lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.log_path.parent))))
+        buttons.addWidget(open_dir)
+        close=QPushButton("Cerrar")
+        close.clicked.connect(dialog.close)
+        buttons.addWidget(close)
+        box.addLayout(buttons)
+        dialog.show()
+        dialog.raise_()
+        self._diagnostic_dialog=dialog
 
     def sync_source_preview(self):
         source=Path(self.file_edit.text().strip()).expanduser()
@@ -532,6 +623,11 @@ class SeparadorDialog(QDialog):
             return
 
         self.current_folder = output
+        folder_logs=diagnostic_directory()
+        self.log_path=(folder_logs / ("separacion_"+
+            datetime.now().strftime("%Y%m%d_%H%M%S_%f")+"_"+prefix[:55]+".log")
+            if folder_logs is not None else None)
+        self._last_engine_error=""
         self.active_request=list(requested)
         self.import_temp_dir = output / "_importacion_temporal"
         self.import_temp_dir.mkdir()
@@ -540,6 +636,8 @@ class SeparadorDialog(QDialog):
         self.result_preview.clear()
         self.table.setRowCount(0)
         self.log.clear()
+        if self.log_path is not None:
+            self.append_log("Registro guardado en: " + str(self.log_path))
         self.append_log("Origen: " + str(input_file))
         self.append_log("Destino: " + str(output))
         self.append_log("Modo: " + label)
@@ -568,21 +666,39 @@ class SeparadorDialog(QDialog):
                     "-i", str(normalized), "-af", f"pan=mono|c0=c{channel}",
                     "-ar", "48000", *codec, str(path)])
         else:
+            # En macOS el motor integrado audio-separator es un lanzador
+            # ejecutable /bin/sh, NO un archivo .py. Invocarlo con Python
+            # provocaba SyntaxError antes de cargar cualquier modelo.
             self.jobs.append([
-                str(PYTHON), str(SEPARATOR), str(normalized),
+                str(SEPARATOR), str(normalized),
                 "--model_filename", model,
                 "--output_dir", str(output),
                 "--model_file_dir", str(MODELS_DIR),
                 "--output_format", outfmt,
                 "--log_level", "info",
                 "--normalization", str(getattr(self,"norm_setting",0.9)),
-                "--amplification", str(getattr(self,"amp_setting",0)),
+                # audio-separator 0.22 exige 0 < amplification <= 1. La
+                # interfaz ofrece 0,00 = desactivado: aproximarlo a cero
+                # sin amplificar señales audibles y sin abortar el motor.
+                "--amplification", str(max(0.000001,min(1.0,float(getattr(
+                    self,"amp_setting",0.0))))),
                 "--sample_rate", str(getattr(self,"sample_setting",44100)),
-                "--demucs_shifts", str((1, 2, 4)[self.quality.currentIndex()]),
-                "--demucs_overlap", str((0.25, 0.50, 0.65)[self.quality.currentIndex()]),
-                "--mdxc_overlap", str((8, 12, 16)[self.quality.currentIndex()]),
-                "--mdx_overlap", str((0.25, 0.5, 0.65)[self.quality.currentIndex()]),
             ])
+            from separation_engine_parameters import family_for_model,command_flags
+            family=family_for_model(model)
+            flags=command_flags(family,self.quality.currentIndex(),
+                                getattr(self,"engine_parameters",{}),
+                                output_format=outfmt)
+            self.jobs[-1].extend(flags)
+            from external_model_import import get as get_external_model
+            external=get_external_model(model)
+            if external and not external.get('catalog_known'):
+                from studio_paths import worker_script
+                script=worker_script(__file__,'external_model_runner.py')
+                if not script.is_file():
+                    raise RuntimeError('Falta adaptador de IA externa: '+str(script))
+                self.jobs[-1]=[str(PYTHON),'-B',str(script),*self.jobs[-1][1:]]
+            self.append_log("Arquitectura: "+family+" · ajustes efectivos: "+" ".join(flags))
             if len(requested)==1:
                 self.jobs[-1].extend(["--single_stem",__import__("separation_pro_controls").SPANISH[requested[0]]])
         self.set_busy(True)
@@ -734,7 +850,8 @@ class SeparadorDialog(QDialog):
                 register_result("separaciones", self.current_folder)
                 QTimer.singleShot(100,self.open_library)
         else:
-            self.progress_label.setText("No se ha completado la separación. Revisa el registro.")
+            reason=self._last_engine_error or "consulta el registro"
+            self.progress_label.setText("Separación fallida: "+reason[:180])
             # En error mantener avance real observado, no borrar la telemetría.
             self.append_log("PROCESO NO COMPLETADO. Los archivos de origen no han cambiado.")
 

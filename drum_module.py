@@ -20,7 +20,7 @@ from preview_player import PreviewPlayer
 from studio_paths import workspace_root
 
 ROOT=workspace_root(__file__)
-MODEL="MDX23C-DrumSep-aufr33-jarredou.ckpt"
+MODEL="aufr33-jarredou_DrumSep_model_mdx23c_ep_141_sdr_10.8059.ckpt"
 PARTS=("Bombo","Caja","Toms","Charles","Ride","Crash")
 AUDIO={".wav",".flac",".mp3",".ogg",".m4a",".aiff",".aif"}
 ALIASES={
@@ -72,6 +72,11 @@ class DrumModule(QWidget):
         self._progress_processing=False
         self._engine_verified=False
         self._cancel_requested=False
+        self._import_stage=None
+        self._import_candidate=None
+        from drum_expert_controls import read_settings
+        self.engine_settings=read_settings()
+        self.expert_engine_panel=None
         self.setObjectName("drumModule")
         lay=QVBoxLayout(self)
         lay.setContentsMargins(11,7,11,7)
@@ -177,14 +182,16 @@ class DrumModule(QWidget):
         model_row.addWidget(QLabel("Motor"))
         self.model=QComboBox()
         self.model.addItem("MDX23C DrumSep · 6 pistas (IA)",MODEL)
-        self.model.setToolTip("Bombo, caja, toms, charles, ride y crash: modelos reales, sin pistas simuladas.")
+        self.model.setToolTip("Modelo que se ejecutará sobre el audio. Solo 6 salidas reales, sin pistas inventadas.")
+        self.model.currentIndexChanged.connect(lambda *_:self._record_model_selection())
         model_row.addWidget(self.model)
-        self.install_btn=QPushButton("Instalar modelo")
-        self.install_btn.setToolTip("Descarga el modelo usando audio-separator. Puede ocupar cientos de MB.")
+        self.install_btn=QPushButton("Gestionar IA…")
+        self.install_btn.setToolTip("Ver el motor disponible y abrir el catálogo. Si ya está instalado, no se descarga otra vez.")
         self.install_btn.clicked.connect(self.install_model)
         model_row.addWidget(self.install_btn)
-        self.manage_models_btn=QPushButton("Más modelos de IA…")
-        self.manage_models_btn.clicked.connect(self.open_model_manager)
+        self.manage_models_btn=QPushButton("Importar IA…")
+        self.manage_models_btn.setToolTip("Incorporar otro modelo MDX23C entrenado para seis pistas, con pesos .ckpt y YAML. Validar antes de activarlo.")
+        self.manage_models_btn.clicked.connect(lambda checked=False:self.import_custom_model())
         model_row.addWidget(self.manage_models_btn)
         model_row.addStretch(1)
         c.addLayout(model_row)
@@ -334,7 +341,12 @@ class DrumModule(QWidget):
         self._on_studio_tab(self.studio.currentIndex())
 
     def engine(self):
-        exe=ROOT/"entorno_ia"/"bin"/"audio-separator"
+        from studio_paths import ia_python
+        # MDXNet admite checkpoints MDX23C externos con YAML comprobado.
+        # Audio-separator NO es sustituto: no reconoce todos los DrumSep.
+        exe=ia_python(__file__).parent/"drum-separator"
+        if not exe.is_file():
+            exe=Path(__file__).resolve().parent.parent/"portable_resources"/"ia_runtime"/"bin"/"drum-separator"
         return exe if exe.is_file() and exe.stat().st_mode & 0o111 else None
 
     def model_filename(self):
@@ -342,42 +354,60 @@ class DrumModule(QWidget):
 
     def refresh_model_choices(self):
         from model_registry import catalog,installed,is_drum,model_active
-        filename=self.model_filename()
+        from drum_custom_models import list_models,ready
+        previous=self.model_filename()
         self.model.blockSignals(True)
         self.model.clear()
         self.model.addItem("MDX23C DrumSep · 6 pistas",MODEL)
         for record in catalog().values():
-            if is_drum(record) and installed(record) and record["filename"]!=MODEL:
-                self.model.addItem(record["name"],record["filename"])
-        selected=model_active().get("drum") or filename
-        idx=self.model.findData(selected)
+            if (is_drum(record) and installed(record) and record['filename']!=MODEL
+                and record.get('architecture')=='MDX23C'
+                and record.get('role')=='drum'):
+                self.model.addItem(record['name'],record['filename'])
+        active=model_active().get('drum')
+        wanted=active if self.model.findData(active)>=0 else previous
+        idx=self.model.findData(wanted)
         if idx>=0:self.model.setCurrentIndex(idx)
         self.model.blockSignals(False)
         self._update_model_state()
 
     def model_dir(self):
+        from drum_custom_models import FOLDER,config_for
+        if config_for(self.model_filename()):return FOLDER
         from model_registry import record_for,locate
         record=record_for(self.model_filename())
-        return locate(record) if record else ROOT/"modelos"/"bateria"
+        return locate(record) if record else FOLDER
 
     def model_ready(self):
+        from drum_custom_models import ready,config_for
+        if config_for(self.model_filename()):return ready(self.model_filename())
         from model_registry import record_for,installed
         record=record_for(self.model_filename())
-        return installed(record) if record else (
-            (self.model_dir()/self.model_filename()).is_file())
+        return installed(record) if record else False
+
+    def _record_model_selection(self):
+        if not hasattr(self,'model_state'):return
+        filename=self.model_filename()
+        if self.model_ready():
+            try:
+                from model_registry import set_active,record_for
+                if record_for(filename):set_active('drum',filename)
+            except (OSError,ValueError):pass
+        self._update_model_state()
 
     def _update_model_state(self):
-        if not self.engine():
-            self.model_state.setText(
-                "Motor audio-separator ausente; configura el entorno IA.")
-        elif self.model_ready():
-            self.model_state.setText(
-                "Modelo de seis instrumentos disponible en disco. "
-                "La calidad debe comprobarse sobre audio real.")
-        else:
-            self.model_state.setText(
-                "Modelo incompleto o no instalado. Usa Preferencias → Modelos de IA "
-                "para consultar y descargar pesos auténticos.")
+        if not hasattr(self,'model_state'):return
+        filename=self.model_filename()
+        from drum_custom_models import config_for
+        engine=self.engine()
+        state=("LISTO" if self.model_ready() and engine else
+               "Motor no disponible" if not engine else "Modelo no instalado")
+        self.model_state.setText(
+            "Motor MDXNet (MDX23C) · "+state+" · 6 pistas: bombo, caja, "
+            "toms, charles, ride, crash.\nModelo: "+filename+
+            (" · importado y validado" if config_for(filename) else " · SHA-256 de pesos comprobable"))
+        self.model_state.setToolTip(str(self.model_dir()/filename))
+        self.install_btn.setText("Cambiar / gestionar IA…" if self.model_ready() else "Instalar IA…")
 
     def refresh_sources(self):
         previous=self.input.text()
@@ -505,8 +535,12 @@ class DrumModule(QWidget):
         sep.file_edit.setFocus()
 
     def _busy(self,busy):
+        if self.expert_engine_panel is not None:
+            self.expert_engine_panel.set_busy(busy)
         self.start_btn.setEnabled(not busy)
         self.install_btn.setEnabled(not busy)
+        self.manage_models_btn.setEnabled(not busy)
+        self.model.setEnabled(not busy)
         self.cancel_btn.setEnabled(busy)
         self.browse.setEnabled(not busy)
         self.import_audio_btn.setEnabled(not busy)
@@ -534,6 +568,7 @@ class DrumModule(QWidget):
         self._engine_indicator.attach(self.process,
             "Preparando audio FLAC" if operation=="normalize"
             else "Separando batería" if operation=="separate"
+            else "Comprobando nuevo modelo de batería" if operation=='import_model'
             else "Instalando modelo")
         self.process.start(str(command[0]),[str(x) for x in command[1:]])
         self._busy(True)
@@ -579,15 +614,23 @@ class DrumModule(QWidget):
 
     def open_model_manager(self):
         from studio_shell import preferences
-        preferences(self.main,open_models=True)
+        preferences(self.main,open_models=True,model_family='Batería')
 
     def install_model(self):
         if self.process is not None or (
-            hasattr(self,"studio") and self.studio.process is not None):return
-        self.model_dir().mkdir(parents=True,exist_ok=True)
-        if self.model_ready():
-            self.status.setText("El modelo ya está descargado.")
+            hasattr(self,"studio") and self.studio.process is not None):
+            self.status.setText("Detén primero la tarea de batería para gestionar modelos.")
             return
+        if self.model_ready():
+            self.status.setText("El motor está INSTALADO. Puedes elegir otro MDX23C o importar pesos con YAML.")
+            self.open_model_manager()
+            return
+        from drum_custom_models import config_for
+        if config_for(self.model_filename()):
+            QMessageBox.warning(self,'IA personalizada incompleta',
+                'Importa otra vez los archivos .ckpt y YAML de un modelo compatible.')
+            return
+        self.model_dir().mkdir(parents=True,exist_ok=True)
         size=QMessageBox.question(self,"Descargar modelo IA",
             "Se descargará el modelo "+self.model_filename()+". Requiere espacio "
             "en disco y una conexión a Internet. ¿Continuar?",
@@ -596,6 +639,58 @@ class DrumModule(QWidget):
         args=["--model_filename",self.model_filename(),"--model_file_dir",str(self.model_dir()),
               "--download_model_only"]
         self._launch(args,"install")
+
+    def import_custom_model(self,weight_path=None,config_path=None,approved=None):
+        """Instalación local de modelos MDX23C de seis stems, verificada por IA.
+
+        Parámetros opcionales usados por las pruebas automáticas aisladas:
+        el botón de la GUI siempre llama sin argumentos, abre el diálogo
+        y requiere aceptación del usuario antes de cargar los pesos.
+        """
+        if self.process is not None or self.studio.process is not None:
+            QMessageBox.information(self,'Motor ocupado','Detén la tarea de batería antes de cargar otro modelo.')
+            return
+        model=weight_path
+        if model is None:
+            model,_=QFileDialog.getOpenFileName(self,'Selecciona un MDX23C de seis pistas',str(Path.home()),'Checkpoint MDX23C (*.ckpt)')
+        if not model:return
+        path=Path(model)
+        cfg_candidates=[x for x in path.parent.glob('*.yaml') if
+             x.stem==path.stem or x.stem==path.stem+'_config' or x.stem+'_model'==path.stem]
+        config=config_path or (str(cfg_candidates[0]) if len(cfg_candidates)==1 else '')
+        if not config:
+            config,_=QFileDialog.getOpenFileName(self,'Selecciona el YAML de ese modelo',str(path.parent),'Configuración YAML (*.yaml *.yml)')
+        if not config:return
+        try:
+            from drum_custom_models import stage
+            folder,entry=stage(path,Path(config))
+        except (ValueError,OSError) as exc:
+            QMessageBox.warning(self,'Modelo no compatible',str(exc))
+            return
+        answer=(QMessageBox.question(self,'Validar modelo MDX23C',
+            'Se comprobará en el motor real que los pesos y el YAML generan '
+            'las seis piezas exigidas. No se sustituye ningún modelo. '
+            'IMPORTA SOLO ARCHIVOS DE FUENTES FIABLES: algunos checkpoints '
+            'PyTorch pueden ejecutar contenido durante su carga. ¿Continuar?',
+            QMessageBox.Yes|QMessageBox.No,QMessageBox.No)
+            if approved is None else (QMessageBox.Yes if approved else QMessageBox.No))
+        if answer!=QMessageBox.Yes:
+            from drum_custom_models import abort
+            abort(folder)
+            return
+        self._import_stage=folder
+        self._import_candidate=entry
+        command=self.engine()
+        if command is None:
+            self.status.setText('Falta el motor MDXNet. No se ha importado el modelo.')
+            from drum_custom_models import abort
+            abort(folder)
+            self._import_stage=self._import_candidate=None
+            return
+        args=['--model_filename',entry['filename'],'--config_filename',entry['config'],
+              '--model_file_dir',str(folder),'--validate_model_only']
+        self.status.setText('Validando pesos y YAML con el motor MDX23C real…')
+        self._start_process_command([command,*args],'import_model')
 
     def start(self):
         if self.process is not None or (
@@ -614,14 +709,14 @@ class DrumModule(QWidget):
             return
         if not self.model_ready():
             QMessageBox.information(self,"Instala primero el modelo",
-                "Antes de separar, instala el modelo real de seis pistas "
-                "mediante «Instalar modelo».")
+                "Antes de separar, carga un modelo MDX23C de seis pistas "
+                "mediante «Instalar IA» o «Importar IA…».")
             return
         # La siguiente toma se añade a la tarea existente sin perder
         # visibilidad ni referencias de los desgloses anteriores.
         if not self.engine():
             QMessageBox.warning(self,"Motor no disponible",
-                "Falta audio-separator en el entorno de IA del programa.")
+                "No se encuentra el motor MDXNet de batería en el entorno de IA.")
             return
         try:
             from project_layout import layout_active
@@ -685,12 +780,22 @@ class DrumModule(QWidget):
         self._operation=None
         self._busy(False)
         if self._cancel_requested:
+            if operation=='import_model' and self._import_stage:
+                from drum_custom_models import abort
+                abort(self._import_stage)
+                self._import_stage=None;self._import_candidate=None
             self.status.setText("Operación cancelada. No se publicaron resultados incompletos.")
         elif code!=0 or status!=QProcess.NormalExit:
-            self.status.setText(
-                "Error preparando el audio." if operation=="normalize" else
-                "Separación incompleta o fallida. "
-                "No se publicarán pistas inventadas ni incompletas.")
+            if operation=='import_model':
+                from drum_custom_models import abort
+                if self._import_stage:abort(self._import_stage)
+                self._import_stage=None;self._import_candidate=None
+                self.status.setText('Modelo rechazado: sus pesos no cargan con el motor MDX23C de seis pistas.')
+            else:
+                self.status.setText(
+                    "Error preparando el audio." if operation=="normalize" else
+                    "Separación incompleta o fallida. "
+                    "No se publicarán pistas inventadas ni incompletas.")
         elif operation=="normalize":
             path=self._normalization_output
             if not path or not path.is_file() or path.stat().st_size<4096:
@@ -702,12 +807,32 @@ class DrumModule(QWidget):
                 args=[str(path),"--model_filename",self.model_filename(),
                       "--model_file_dir",str(self.model_dir()),
                       "--output_dir",str(self._current_output),
-                      "--output_format","FLAC"]
+                      "--output_format",self.engine_settings['output_format'],
+                      "--overlap",str(self.engine_settings['overlap']),
+                      "--batch_size",str(self.engine_settings['batch_size']),
+                      "--bit_depth",str(self.engine_settings['bit_depth']),
+                      "--sample_rate",str(self.engine_settings['sample_rate'])]
                 self._launch(args,"separate")
         elif operation=="install":
             self._update_model_state()
             self.status.setText("Modelo descargado." if self.model_ready() else
                                 "No se ha podido verificar la descarga del modelo.")
+        elif operation=='import_model':
+            from drum_custom_models import approve,abort
+            folder=self._import_stage
+            entry=self._import_candidate
+            self._import_stage=None;self._import_candidate=None
+            if folder and entry:
+                try:
+                    approve(folder,entry)
+                    self.refresh_model_choices()
+                    idx=self.model.findData(entry['filename'])
+                    if idx>=0:self.model.setCurrentIndex(idx)
+                    self._update_model_state()
+                    self.status.setText('Modelo externo validado y seleccionado: '+entry['filename'])
+                except (OSError,ValueError) as exc:
+                    self.status.setText('Error al registrar el modelo: '+str(exc))
+                    abort(folder)
         elif operation=="separate":
             try:
                 verified=valid_drum_results(self._current_output)
@@ -755,6 +880,7 @@ class DrumModule(QWidget):
                 self.progressChanged.emit()
             valid=(not self._cancel_requested and code==0 and status==QProcess.NormalExit and
                    (operation=="install" and self.model_ready() or
+                    operation=="import_model" and self.model_ready() or
                     operation=="separate" and
                     getattr(self,"_engine_verified",False)))
             self._engine_indicator.finish(bool(valid),self.status.text())

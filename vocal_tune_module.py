@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 )
 from task_staging import TaskStorage
 from preview_player import PreviewPlayer
-from studio_paths import workspace_root
+from studio_paths import workspace_root,ia_python,worker_script
 from studio_slider_spin import StudioSliderSpin
 from ux_controls import PresetStrip
 ROOT=workspace_root(__file__)
@@ -628,10 +628,12 @@ class VocalTuneModule(QWidget):
             w.setEnabled(not busy)
         for strip in (self.full_presets,self.fx_presets,self.spatial_presets):
             strip.setEnabled(not busy)
+        if getattr(self,"_clone_panel",None) is not None:
+            self._clone_panel.set_busy(busy)
         self._sync_effect_availability()
 
     def executable(self):
-        path=ROOT/"entorno_ia"/"bin"/"python"
+        path=ia_python(__file__)
         return path if path.is_file() else None
 
     def refresh_sources(self):
@@ -703,7 +705,7 @@ class VocalTuneModule(QWidget):
         self._engine_indicator.set_cancel_callback(self.cancel)
         self._engine_indicator.attach(proc,self.status.text())
         self._set_busy(True)
-        proc.start(str(executable),[str(ROOT/"vocal_tune_engine.py"),
+        proc.start(str(executable),[str(worker_script(__file__,"vocal_tune_engine.py")),
                    "--input",str(file),"--analyze"])
 
     def analyze(self):
@@ -761,7 +763,7 @@ class VocalTuneModule(QWidget):
         self._engine_indicator.set_cancel_callback(self.cancel)
         self._engine_indicator.attach(proc,self.status.text())
         self._set_busy(True)
-        proc.start(str(python),[str(ROOT/"vocal_tune_engine.py"),
+        proc.start(str(python),[str(worker_script(__file__,"vocal_tune_engine.py")),
             "--input",str(source),"--output",str(target),
             "--tonic",str(self.tonic.currentIndex()),
             "--scale",str(self.scale.currentText()),
@@ -786,6 +788,81 @@ class VocalTuneModule(QWidget):
             "--stereo-width",str(self.stereo_width.value()),
             "--output-gain-db",str(self.output_gain_db.value())]+
             (["--bypass-tune"] if self.bypass_tune.isChecked() else []))
+
+    def start_voice_clone(self):
+        """Transformación tímbrica DSP verificable con referencia autorizada.
+
+        La clonación neuronal real requiere un motor compatible instalado;
+        modelos registrados sin soporte no se ejecutan ni se simulan.
+        """
+        if self.process is not None:return
+        panel=getattr(self,"_clone_panel",None)
+        if panel is None:return
+        selected_engine=panel.model.currentData()
+        from vocal_openvoice_engine import model_ready
+        if selected_engine not in ("local","openvoice_v2") or (
+                selected_engine=="openvoice_v2" and not model_ready()):
+            QMessageBox.warning(self,"Modelo no ejecutable",
+                "Este modelo está registrado, pero falta su motor de "
+                "conversión neuronal compatible. No se fabricará un "
+                "resultado fingido. Selecciona transferencia local.")
+            return
+        if not self.ref_consent.isChecked():
+            QMessageBox.information(self,"Referencia autorizada",
+                "Confirma que tienes permiso para procesar esta voz.")
+            return
+        mine=Path(self.input.text()).expanduser()
+        ref=Path(self.reference.text()).expanduser()
+        if (not mine.is_file() or not ref.is_file()
+                or mine.suffix.lower() not in AUDIO
+                or ref.suffix.lower() not in AUDIO):
+            QMessageBox.information(self,"Voces necesarias",
+                "Selecciona una grabación vocal solista y otra de "
+                "referencia autorizada.")
+            return
+        if mine.resolve()==ref.resolve():
+            QMessageBox.warning(self,"Dos fuentes diferentes",
+                "La voz de entrada y la referencia deben ser distintas.")
+            return
+        python=self.executable()
+        if python is None:
+            QMessageBox.warning(self,"Motor vocal ausente",
+                "No está disponible el entorno IA de procesamiento.")
+            return
+        from task_staging import unique_dest
+        folder=(self.storage.processing_folder if self.storage.folder
+                and self.storage.folder.is_dir() else self.storage.start())
+        folder.mkdir(parents=True,exist_ok=True)
+        is_neural=selected_engine=="openvoice_v2"
+        target=unique_dest(folder,
+            "voz_openvoice.flac" if is_neural else "voz_timbre.flac")
+        self.processing_file=target
+        self._operation="voice_openvoice" if is_neural else "voice_clone"
+        self._run_output=""
+        self.status.setText("Analizando timbre y expresividad de ambas voces…")
+        self.processing_notice.setText(
+            "Conversión neuronal OpenVoice V2 (CPU) activa." if is_neural else
+            "Transformación tímbrica espectral activa.")
+        proc=QProcess(self)
+        proc.setProcessChannelMode(QProcess.MergedChannels)
+        proc.readyReadStandardOutput.connect(self._log)
+        proc.finished.connect(self._finished)
+        proc.errorOccurred.connect(self._error)
+        self.process=proc
+        self._cancel_requested=False
+        from engine_task_indicator import EngineTaskIndicator
+        self._engine_indicator=EngineTaskIndicator(
+            self,"Transferencia tímbrica vocal",phases=1)
+        self._engine_indicator.set_cancel_callback(self.cancel)
+        self._engine_indicator.attach(proc,self.status.text())
+        args=[str(worker_script(__file__,
+              "vocal_openvoice_engine.py" if is_neural else "vocal_clone_engine.py")),
+              "--source",str(mine),"--reference",str(ref),
+              "--output",str(target)]
+        for key,value in panel.params_for_engine().items():
+            args.extend(("--"+key.replace("_","-"),str(value)))
+        self._set_busy(True)
+        proc.start(str(python),args)
 
     def start_learning(self):
         """Transferencia prosódica real con control de referencia y límites."""
@@ -842,7 +919,7 @@ class VocalTuneModule(QWidget):
         self._engine_indicator.attach(proc,self.status.text())
         self._set_busy(True)
         proc.start(str(python),[
-            str(ROOT/"vocal_interpretation_engine.py"),
+            str(worker_script(__file__,"vocal_interpretation_engine.py")),
             "--source",str(mine),"--reference",str(reference),
             "--output",str(target),
             "--melody",str(self.learn_melody.value()),
@@ -941,6 +1018,15 @@ class VocalTuneModule(QWidget):
                         "Transferencia de interpretación completada. "
                         "Tu voz sigue siendo el origen del audio. "
                         "Revisa la toma A/B antes de guardarla.")
+                elif self._operation=="voice_openvoice":
+                    self.status.setText(
+                        "Clonación neuronal OpenVoice V2 terminada. "
+                        "Escucha y compara antes de guardar.")
+                elif self._operation=="voice_clone":
+                    self.status.setText(
+                        "Transferencia tímbrica y expresiva completada "
+                        "(DSP; no es clonación neuronal de identidad). "
+                        "Escucha y compara las tomas antes de guardar.")
                 elif self.bypass_tune.isChecked():
                     message=("Efectos vocales renderizados sin afinación."
                              if info.get("effects_active") else
@@ -978,6 +1064,8 @@ class VocalTuneModule(QWidget):
         self.table.setRowCount(len(valid))
         for index,path in enumerate(valid):
             label=("Interpretación asistida" if path.name.startswith("voz_interpretada")
+                   else "Clonación neuronal" if path.name.startswith("voz_openvoice")
+                   else "Transferencia tímbrica" if path.name.startswith("voz_timbre")
                    else "Voz afinada")
             self.table.setItem(index,0,QTableWidgetItem(label))
             item=QTableWidgetItem(path.name)

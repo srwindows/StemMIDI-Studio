@@ -15,6 +15,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import urllib.parse
 
@@ -146,6 +147,14 @@ def _hash(path):
 
 
 def _trash_now(path):
+    if sys.platform in ("darwin","win32"):
+        # Papelera nativa del Finder o de Windows, sin recurrir a XDG.
+        # QFile.moveToTrash usa el gestor del sistema y devuelve False
+        # si falla; jamás eliminar directamente el original en ese caso.
+        from PySide6.QtCore import QFile
+        if not QFile.moveToTrash(str(path)):
+            raise OSError("No se pudo enviar a la papelera del sistema: "+str(path))
+        return
     gio=shutil.which("gio")
     if gio:
         try:

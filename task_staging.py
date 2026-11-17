@@ -17,7 +17,8 @@ import mido
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QCheckBox, QLabel, QScrollArea, QFrame,
-    QPushButton, QFileDialog, QMessageBox, QGridLayout, QLineEdit, QComboBox
+    QPushButton, QFileDialog, QMessageBox, QGridLayout, QLineEdit, QComboBox,
+    QSizePolicy
 )
 from preview_player import PreviewPlayer
 
@@ -498,7 +499,8 @@ class TaskResults(QWidget):
         main.addWidget(self.status)
         if self.kind=="midi":
             versions_row=QHBoxLayout()
-            versions_row.addWidget(QLabel("Conversión a revisar"))
+            self.version_label=QLabel("Conversión a revisar")
+            versions_row.addWidget(self.version_label)
             self.version_choice=QComboBox(self)
             self.version_choice.setToolTip(
                 "Cambia entre todas las versiones MIDI de esta tarea, sin descartar las anteriores.")
@@ -513,6 +515,7 @@ class TaskResults(QWidget):
         self.rows.setSpacing(4)
         self.rows.setContentsMargins(2,3,5,3)
         viewport.setWidget(self.container)
+        self.viewport=viewport
         main.addWidget(viewport,1)
         self.preview=PreviewPlayer("PREVISUALIZAR RESULTADO SELECCIONADO",self)
         main.addWidget(self.preview)
@@ -532,11 +535,21 @@ class TaskResults(QWidget):
             self.edit_button=QPushButton("Editar en Piano Roll")
             self.edit_button.clicked.connect(self.request_editor)
             controls.addWidget(self.edit_button)
-        controls.addStretch()
+        if self.kind=="separaciones":
+            # Toda la anchura de revisión es útil; sin 200 px vacíos a la derecha.
+            for button in (self.save_all,self.save_selected,self.new_task):
+                button.setProperty("allowStretch",True)
+                button.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
+                button.setMaximumWidth(16777215)
+            for pos in range(3):controls.setStretch(pos,1)
+        else:
+            controls.addStretch()
         main.addLayout(controls)
         self.path_label=QLabel("Los resultados se almacenan temporalmente en Recuperación.")
         self.path_label.setObjectName("muted")
         self.path_label.setWordWrap(True)
+        if self.kind=="separaciones":
+            self.path_label.setStyleSheet("font-size:12px;color:#cbe5ef;")
         main.addWidget(self.path_label)
 
     def populate(self):
@@ -545,18 +558,30 @@ class TaskResults(QWidget):
         while self.rows.count():
             item=self.rows.takeAt(0)
             widget=item.widget()
-            if widget is not None:widget.deleteLater()
+            if widget is not None:
+                # QLayout.takeAt() no lo oculta inmediatamente; la pantalla
+                # anterior quedaba pintada encima de las filas nuevas.
+                widget.hide()
+                widget.deleteLater()
         self.lines.clear()
         for i,path in enumerate(self.storage.items):
-            line=TrackLine(path,i,self.play_file,self.stop_file,self,
-                           self.editRequested.emit if self.kind=="midi" else None)
+            if self.kind=="separaciones" and getattr(self,"_audio_review_enabled",False):
+                from separation_review_ui import ReviewTrackLine
+                line=ReviewTrackLine(path,i,self.play_file,self.stop_file,self)
+            else:
+                line=TrackLine(path,i,self.play_file,self.stop_file,self,
+                               self.editRequested.emit if self.kind=="midi" else None)
             line.checked.setChecked(previous_checks.get(str(Path(path).resolve()),True))
+            if self.kind=="separaciones" and getattr(self,"_audio_review_enabled",False):
+                line.checked.toggled.connect(
+                    lambda checked,name=line.instrument:self._review_checkbox(name,checked))
             self.rows.addWidget(line)
             self.lines.append(line)
         num=len(self.storage.items)
         if num==0:
             from PySide6.QtWidgets import QLabel
             placeholder=QLabel(
+                "Sin conversiones MIDI pendientes" if self.kind=="midi" else
                 "SIN PISTAS EN ESTA TAREA\n\n"
                 "01  Importa una grabación o utiliza una pista del proyecto\n"
                 "02  Ejecuta Separar o Convertir en el módulo correspondiente\n"
@@ -564,8 +589,8 @@ class TaskResults(QWidget):
             placeholder.setObjectName("moduleEmptyState")
             placeholder.setAlignment(Qt.AlignCenter)
             placeholder.setWordWrap(True)
-            placeholder.setMinimumHeight(154)
-            self.rows.addStretch()
+            placeholder.setMinimumHeight(32 if self.kind=="midi" else 154)
+            if self.kind!="midi":self.rows.addStretch()
             self.rows.addWidget(placeholder)
         self.rows.addStretch()
         self.status.setText(
@@ -573,6 +598,19 @@ class TaskResults(QWidget):
             if num else
             "Aún sin resultados. Importa un audio y pulsa Separar o Convertir.")
         if self.kind=="midi":
+            if getattr(self,'_midi_unified',False):
+                self.viewport.setMaximumHeight(min(260,max(54,38*num+16)))
+                self.viewport.setVisible(bool(num))
+                self.status.setVisible(bool(num))
+                title=getattr(self,'_midi_pending_title',None)
+                if title is not None:title.setVisible(bool(num))
+                activity=getattr(self,'_midi_activity_panel',None)
+                if activity is not None:
+                    # Con muchas pistas y una ventana pequeña, priorizar
+                    # la lista y los transportes sin recortarlos.
+                    activity.setVisible(not num or self.height()>820)
+                self.version_label.setVisible(bool(self.storage.versions))
+                self.version_choice.setVisible(bool(self.storage.versions))
             current=str(self.storage.composite) if self.storage.composite else None
             self.version_choice.blockSignals(True)
             self.version_choice.clear()
@@ -594,6 +632,19 @@ class TaskResults(QWidget):
         self.save_selected.setEnabled(bool(num))
         self.new_task.setEnabled(self.storage.folder is not None)
         self.preview.clear()
+        if self.kind=="separaciones" and getattr(self,"_audio_review_enabled",False):
+            # PreviewPlayer.clear() deshabilita Play porque no hay UN solo
+            # archivo cargado. Aquí el origen es la selección MULTIPISTA.
+            self.preview.play_button.setEnabled(bool(num))
+            self.preview.stop_button.setEnabled(False)
+        if self.kind=="separaciones" and hasattr(self,"_refresh_sketch_selection"):
+            for line in self.lines:
+                line.checked.toggled.connect(self._refresh_sketch_selection)
+            self._refresh_sketch_selection()
+        if (self.kind=="separaciones" and getattr(self,"_audio_review_enabled",False)
+                and hasattr(self,"_sync_review_selection")):
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0,self._sync_review_selection)
 
     def choose_version(self,index):
         if self.kind!="midi" or index<0:return

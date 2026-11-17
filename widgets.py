@@ -54,7 +54,11 @@ class StereoMeter(QWidget):
             p.drawLine(int(pkx), y-2, int(pkx), y+13)
         p.setFont(QFont("Sans", 8))
         p.setPen(QColor("#8394a8"))
-        for db in (-60, -48, -36, -24, -12, -6, 0):
+        # Evitar amontonar una escala de siete marcas en un VU compacto.
+        # Mantener la referencia dBFS verdadera, con marcas adaptativas.
+        ticks=((-60,-24,-12,0) if width<210 else
+               (-60,-48,-36,-24,-12,-6,0))
+        for db in ticks:
             x = left + (db+60)/60 * width
             rect = QRectF(x-15, 0, 30, 13)
             p.drawText(rect, Qt.AlignHCenter, str(db))

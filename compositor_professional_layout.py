@@ -365,7 +365,7 @@ def build(c):
     c.preview=__import__("preview_player").PreviewPlayer(
         "PREVISUALIZACIÓN DE LA MEZCLA",c)
     c.preview.set_compact(True)
-    # El reproductor sigue reproduciendo y controlando salida audio aunque
+    # El reproductor sigue reproduciendo y contgmo salida audio aunque
     # su panel grande esté recogido. El master medido está arriba junto a Play.
     c.preview.hide()
     lower.addWidget(c.preview)

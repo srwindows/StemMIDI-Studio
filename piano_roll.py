@@ -14,7 +14,7 @@ from pathlib import Path
 
 import mido
 from PySide6.QtCore import Qt, QRectF, QPointF, Signal, QTimer
-from PySide6.QtGui import QColor, QBrush, QPen, QPainter, QKeySequence, QShortcut
+from PySide6.QtGui import QColor, QBrush, QPen, QPainter, QKeySequence, QShortcut, QLinearGradient
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame, QGraphicsItem,
     QGraphicsRectItem, QGraphicsScene, QGraphicsSimpleTextItem, QGraphicsView,
@@ -204,6 +204,50 @@ class NoteBox(QGraphicsRectItem):
         self._original=None
         self._changed=False
 
+    # R41 PROFESSIONAL PIANO ROLL: polished MIDI notes, no matrix cells.
+    def paint(self,painter,option,widget=None):
+        rect=self.rect()
+        if rect.width()<=0 or rect.height()<=0:return
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing,True)
+        active=self.index in self.editor.selected_indices
+        base=QColor("#f0b657" if active else "#31bdb0")
+        highlight=base.lighter(138)
+        low=base.darker(125)
+        shape=QRectF(rect.x()+.4,rect.y()+.4,
+                     max(.6,rect.width()-.8),max(.4,rect.height()-.8))
+        radius=max(.4,min(3.5,shape.height()*.25,shape.width()*.24))
+        gradient=QLinearGradient(shape.topLeft(),shape.bottomLeft())
+        gradient.setColorAt(0.,highlight)
+        gradient.setColorAt(.24,base)
+        gradient.setColorAt(1.,low)
+        painter.setBrush(QBrush(gradient))
+        painter.setPen(QPen(QColor("#cceef0" if active else "#194b59"),.8))
+        painter.drawRoundedRect(shape,radius,radius)
+        # Bisel de lectura para que se distingan duración y contorno.
+        if shape.height()>=5.5 and shape.width()>=9:
+            painter.setPen(QPen(QColor(255,255,255,74),.8))
+            painter.drawLine(QPointF(shape.left()+2,shape.top()+1.4),
+                             QPointF(shape.right()-2,shape.top()+1.4))
+            painter.setPen(QPen(QColor(0,0,0,65),1))
+            painter.drawLine(QPointF(shape.left()+2,shape.bottom()-1),
+                             QPointF(shape.right()-2,shape.bottom()-1))
+        if shape.width()>=52 and shape.height()>=14:
+            painter.setPen(QColor("#062831" if not active else "#4a2a0a"))
+            font=painter.font()
+            font.setPixelSize(max(8,min(11,int(shape.height()*.61))))
+            font.setBold(True)
+            painter.setFont(font)
+            note=self.editor.current_notes[self.index]
+            painter.drawText(shape.adjusted(6,0,-4,0),
+                             Qt.AlignLeft|Qt.AlignVCenter,note_name(note["pitch"]))
+        if shape.width()>=24 and shape.height()>=12:
+            painter.setPen(QPen(QColor(255,255,255,105),1))
+            x=shape.right()-4
+            painter.drawLine(QPointF(x,shape.center().y()-3),
+                             QPointF(x,shape.center().y()+3))
+        painter.restore()
+
     def hoverMoveEvent(self,event):
         near_right=(self.rect().width()>=18 and
                     event.pos().x()>self.rect().right()-min(12,self.rect().width()*.24))
@@ -293,12 +337,83 @@ class RollView(QGraphicsView):
         super().__init__()
         self.editor=editor
         self.setRenderHint(QPainter.Antialiasing,True)
+        self.setOptimizationFlag(QGraphicsView.DontAdjustForAntialiasing,False)
+        self.setBackgroundBrush(QColor("#0c1420"))
         self.setDragMode(QGraphicsView.NoDrag)
         self.setViewportUpdateMode(QGraphicsView.BoundingRectViewportUpdate)
         self.setMouseTracking(True)
         self._pan_start=None
         self._scrub_active=False
         self.setDragMode(QGraphicsView.RubberBandDrag)
+
+    def drawBackground(self,painter,rect):
+        """R41 PROFESSIONAL PIANO ROLL: subdued DAW lanes and beats.
+
+        Horizontal semitones use dark, low-contrast rows; octave separators
+        and measures are visible. Scale-aware lines avoid a matrix effect
+        and repeated QGraphicsItems during zoom.
+        """
+        painter.save()
+        painter.setClipRect(rect)
+        painter.fillRect(rect,QColor("#0c1420"))
+        e=self.editor
+        if e.row_px<=0 or e.beat_px<=0:
+            painter.restore()
+            return
+        left=max(float(KEY_WIDTH),rect.left())
+        right=rect.right()
+        top=max(float(RULER),rect.top())
+        bottom=rect.bottom()
+        if right<=left or bottom<=top:
+            painter.restore()
+            return
+        # White/black-key lanes, with a discreet C row and octave boundary.
+        high=min(HIGH,e.y_to_pitch(top)+1)
+        low=max(LOW,e.y_to_pitch(bottom)-1)
+        for pitch in range(high,low-1,-1):
+            y=e.pitch_y(pitch)
+            if y+e.row_px<top or y>bottom:continue
+            is_black=pitch%12 in (1,3,6,8,10)
+            is_c=(pitch%12==0)
+            color=("#1b2b3a" if is_c else
+                   "#111b28" if is_black else "#172331")
+            painter.fillRect(QRectF(left,y,right-left,e.row_px),QColor(color))
+            if is_c:
+                painter.setPen(QPen(QColor("#365775"),1.2))
+                painter.drawLine(QPointF(left,y),QPointF(right,y))
+            elif e.row_px>=11 and pitch%12==5:
+                painter.setPen(QPen(QColor("#293d52"),.7))
+                painter.drawLine(QPointF(left,y),QPointF(right,y))
+            elif e.row_px>=17:
+                painter.setPen(QPen(QColor("#203042"),.45))
+                painter.drawLine(QPointF(left,y),QPointF(right,y))
+        # Vertical separators use four visual weights: bar / beat /
+        # subdivisions, without filled grid cells.
+        tpb=max(1,e.ticks_per_beat)
+        first=max(0,int(e.x_to_tick(left)//tpb)-1)
+        end=max(first+1,int(e.x_to_tick(right)//tpb)+2)
+        # Evitar postes cada pocos píxeles: el zoom general debe
+        # seguir pareciendo una línea temporal, no una matriz.
+        step=max(1,e.grid_beat_step(end-first,minimum_px=48))
+        start=(first//step)*step
+        for beat in range(start,end+1,step):
+            x=e.tick_x(beat*tpb)
+            if x<left-2 or x>right+2:continue
+            is_bar=beat%4==0
+            pen=QPen(QColor("#446486" if is_bar else "#2a4157"),
+                     1.35 if is_bar else .8)
+            painter.setPen(pen)
+            painter.drawLine(QPointF(x,top),QPointF(x,bottom))
+        if e.beat_px>=45 and e.quant_ticks:
+            div=max(1,tpb//e.quant_ticks)
+            if div>1 and e.beat_px/div>=12:
+                painter.setPen(QPen(QColor("#233446"),.55))
+                for beat in range(first,end+1):
+                    for sub in range(1,min(17,div)):
+                        x=e.tick_x(beat*tpb+sub*e.quant_ticks)
+                        if left<=x<=right:
+                            painter.drawLine(QPointF(x,top),QPointF(x,bottom))
+        painter.restore()
 
     def contextMenuEvent(self,event):
         """Las mismas operaciones MIDI en el editor completo y el flotante."""
@@ -438,7 +553,7 @@ class RollView(QGraphicsView):
                                 bounds.width()-KEY_WIDTH,RULER))
         start=max(0,int(editor.x_to_tick(left+KEY_WIDTH)//editor.ticks_per_beat))
         finish=int(editor.x_to_tick(bounds.right())//editor.ticks_per_beat)+2
-        step=editor.grid_beat_step(max(0,finish-start),minimum_px=14)
+        step=editor.grid_beat_step(max(0,finish-start),minimum_px=48)
         label_step=step
         while editor.beat_px*label_step<55:
             label_step*=2
@@ -812,7 +927,12 @@ class PianoRollDialog(QDialog):
         self.tempo_apply.clicked.connect(self.apply_tempo_change)
         tempo_bar.addWidget(self.tempo_apply)
         tempo_bar.addStretch()
-        root.addWidget(horizontal_controls(tempo_bar,self))
+        # La barra antigua queda como control de compatibilidad, pero no
+        # se muestra: TEMPO DEL PIANO ROLL es el único BPM visible.
+        self._legacy_tempo_row=horizontal_controls(tempo_bar,self)
+        self._legacy_tempo_row.setVisible(False)
+        self.tempo_mode.hide()
+        root.addWidget(self._legacy_tempo_row)
 
         split=QSplitter(Qt.Horizontal)
         track_panel=QFrame()
@@ -938,6 +1058,10 @@ class PianoRollDialog(QDialog):
         self.tempo_mode.currentIndexChanged.connect(self.save_view_settings)
         self.follow_cursor.toggled.connect(self.save_view_settings)
         self.on_grid_changed()
+        # Tempo real de la canción siempre visible, también con el
+        # panel Componer seleccionado. No depende del BPM del generador.
+        from piano_roll_professional_tempo import install_professional_tempo
+        install_professional_tempo(self)
 
     def choose_file(self):
         path,_=file_dialogs.get_open_file_name(self,"Abrir MIDI",str(Path.home()),
@@ -984,9 +1108,41 @@ class PianoRollDialog(QDialog):
                            f"{self.ticks_per_beat} ticks/negra")
         # Encajar automáticamente al ABRIR, con el tamaño definitivo
         # del viewport, sin perder la posibilidad de hacer zoom manual.
-        QTimer.singleShot(0,self.fit_notes)
+        QTimer.singleShot(0,self.present_midi_edit_view)
         self.midiOpened.emit(str(self.current_path))
         return True
+
+    def present_midi_edit_view(self):
+        """Vista profesional de EDICIÓN al abrir, no 'ver 40 compases'.
+
+        No modifica ticks ni duración; muestra 4–8 compases con notas
+        legibles. El botón Encajar vista completa sigue realizando
+        explícitamente el encuadre de toda la canción.
+        """
+        if not self.midi or not self.tracks:return
+        notes=[n for track in self.tracks for n in track["notes"]]
+        if not notes:return
+        first=min(n["start"] for n in notes)
+        pitches=sorted(n["pitch"] for n in notes)
+        median=pitches[len(pitches)//2]
+        usable=max(250,self.view.viewport().width()-KEY_WIDTH-18)
+        # 20 negras = cinco compases en 4/4; no reducir a 3 px
+        # una nota cuando se abre una pieza de decenas de compases.
+        target_px=max(28.,min(88.,usable/20.))
+        self.set_beat_zoom(target_px,redraw=False)
+        self.set_row_zoom(19.,redraw=False)
+        self.redraw()
+        # QGraphicsView debe sincronizar el rango de desplazamiento
+        # antes de centrar las notas; sceneRect() solo no basta en Qt6.
+        self.view.setSceneRect(self.scene.sceneRect())
+        self.view.centerOn(
+            self.tick_x(first+max(0,2*self.ticks_per_beat)),
+            self.pitch_y(median))
+        # Dejar un compás de contexto y el teclado siempre cerca.
+        self.view.horizontalScrollBar().setValue(
+            max(0,round(self.tick_x(first)-KEY_WIDTH-
+                        min(self.beat_px*2,75))))
+        self.view.viewport().update()
 
     def check_discard(self):
         if not self.dirty:
@@ -1091,16 +1247,6 @@ class PianoRollDialog(QDialog):
             width=max(800,self.view.viewport().width()+2)
             height=RULER+(HIGH-LOW+1)*self.row_px
             self.scene.setSceneRect(0,0,width,height)
-            for pitch in range(LOW,HIGH+1):
-                y=self.pitch_y(pitch)
-                black=pitch%12 in (1,3,6,8,10)
-                self.scene.addRect(QRectF(KEY_WIDTH,y,width-KEY_WIDTH,self.row_px),
-                    QPen(QColor("#234459"),.65),
-                    QBrush(QColor("#102437" if black else "#163047")))
-            for beat in range(0,36,self.grid_beat_step(36)):
-                x=self.tick_x(beat*self.ticks_per_beat)
-                self.scene.addLine(x,RULER,x,height,
-                    QPen(QColor("#37647c" if beat%4==0 else "#1f4057"),1))
             self.stats.setText("Sin archivo MIDI · teclado y rejilla preparados para edición")
             self._playhead=None
             self.view.viewport().update()
@@ -1111,40 +1257,8 @@ class PianoRollDialog(QDialog):
                   self.tick_x(max_tick+self.ticks_per_beat*.1)+5)
         height=RULER+(HIGH-LOW+1)*self.row_px
         self.scene.setSceneRect(0,0,width,height)
-        # Piano keyboard and semitone lanes
-        for pitch in range(LOW,HIGH+1):
-            y=self.pitch_y(pitch)
-            black=pitch%12 in (1,3,6,8,10)
-            self.scene.addRect(QRectF(KEY_WIDTH,y,width-KEY_WIDTH,self.row_px),
-                QPen(QColor("#263747"),.4),QBrush(QColor("#172635" if black else "#1d3040")))
-            key=self.scene.addRect(QRectF(0,y,KEY_WIDTH-2,self.row_px),
-                QPen(QColor("#263b48"),.5),QBrush(QColor("#293946" if black else "#d8e4ea")))
-            if self.row_px>=14 and (pitch%12 in (0,5,9) or pitch==LOW):
-                label=self.scene.addSimpleText(note_name(pitch))
-                label.setBrush(QBrush(QColor("#182a34" if not black else "#e6eff2")))
-                label.setPos(7,y-1)
-                label.setScale(.8)
-        # Time ruler
-        self.scene.addRect(QRectF(KEY_WIDTH,0,width-KEY_WIDTH,RULER),
-            QPen(QColor("#435769"),.8),QBrush(QColor("#273b4a")))
-        num=max(4,int(math.ceil(max_tick/self.ticks_per_beat))+1)
-        step=self.grid_beat_step(num)
-        for beat in range(0,num,step):
-            x=self.tick_x(beat*self.ticks_per_beat)
-            self.scene.addLine(x,RULER,x,height,
-                QPen(QColor("#5a7587" if beat%4==0 else "#354c5c"),
-                     1.3 if beat%4==0 else .7))
-            if beat%4==0 and self.beat_px*step>=20:
-                mark=self.scene.addSimpleText(str(beat//4+1))
-                mark.setBrush(QBrush(QColor("#d6e6ec")))
-                mark.setPos(x+4,3)
-        if self.quant_ticks:
-            subdivisions=min(16,max(1,self.ticks_per_beat//self.quant_ticks))
-            if self.beat_px/subdivisions>=8:
-                for beat in range(0,num):
-                    for sub in range(1,subdivisions):
-                        x=self.tick_x(beat*self.ticks_per_beat+sub*self.quant_ticks)
-                        self.scene.addLine(x,RULER,x,height,QPen(QColor("#273e4f"),.5))
+        # Grid and ruler now render in RollView.drawBackground and
+        # RollView.drawForeground. The scene owns ONLY editable MIDI notes.
         for i,n in enumerate(self.current_notes):
             x=self.tick_x(n["start"])
             w=max(2.5,self.delta_x(n["end"]-n["start"]))

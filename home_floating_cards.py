@@ -469,6 +469,10 @@ class CardManager(QObject):
         source=next((lay for lay in rows
                      if lay is not None and lay.indexOf(card)>=0),None)
         if source is None:return
+        # El mismo panel vive en la pestaña avanzada hasta que el usuario
+        # abre el candado. Trasladarlo, jamás crear una segunda instancia.
+        bridge=getattr(self,'advanced_parity_bridges',{}).get(card)
+        if bridge is not None:bridge.to_floating()
         original_index=source.indexOf(card)
         placeholder=QFrame(card.parentWidget() if free else self.home.page)
         placeholder.setObjectName("floatingPlaceholder")
@@ -501,6 +505,10 @@ class CardManager(QObject):
         for button in card.findChildren(QPushButton):
             button.setCursor(Qt.PointingHandCursor)
         floatwin.setStyleSheet(FLOAT_STYLE)
+        if card is self.home.mon_card:
+            # Restaurar Formato y Calidad originales al ampliar. El botón
+            # de laboratorio se oculta porque ya existe el panel avanzado.
+            self.home.monitor_format_panel.show()
         # El popup no debe seguir siendo hijo gráfico de Inicio.
         self._native_floating_popups(card)
         large=card in (self.home.mon_card,self.home.midi_card,
@@ -549,7 +557,12 @@ class CardManager(QObject):
         self._native_floating_popups(card)
         # Reproductor local en la ventana: no accede a ninguna otra pestaña.
         # Grabación ya posee REC/Play+VU propios, por lo que no se duplica.
-        if card is not self.home.mon_card and card is not self.home.info_card:
+        pro_mix=(card is self.home.mix_card and
+                 getattr(getattr(self.other_expanders.get(card),
+                                 "project_mixer",None),"is_pro_console",False))
+        if card is not self.home.mon_card and card is not self.home.info_card and not pro_mix:
+            # Consola profesional ya tiene su transporte compartido.
+            # No superponer un segundo transporte flotante.
             # «MIDI a audio» tiene su propio transporte completo:
             # no añadir otra franja de reproducción duplicada.
             from floating_transport import FloatingTransport
@@ -628,6 +641,10 @@ class CardManager(QObject):
         if card is self.home.result_card:
             from results_dragdrop import set_compact_results
             set_compact_results(self.home,True)
+        if card is self.home.mon_card:
+            # Evitar compresión/solapamientos al volver al candado cerrado.
+            self.home.monitor_format_panel.hide()
+            self.home.audio_lab_button.hide()
         window.body.removeWidget(card)
         workspace=getattr(self.home,"home_workspace",None)
         in_free=(workspace is not None and workspace.is_free
@@ -650,6 +667,8 @@ class CardManager(QObject):
         card.lock_button.setIcon(lock_icon(False))
         card.lock_button.setToolTip("Desbloquear · ampliar y separar este módulo")
         card.show()
+        bridge=getattr(self,'advanced_parity_bridges',{}).get(card)
+        if bridge is not None:bridge.to_tab()
         if in_free and workspace is not None:
             workspace._arrange()
             workspace._sync_controls()

@@ -25,13 +25,13 @@ from PySide6.QtWidgets import (
     QListWidget, QListWidgetItem, QAbstractItemView,
 )
 
-from studio_paths import workspace_root
+from studio_paths import workspace_root,ia_python,worker_script
 ROOT=workspace_root(__file__)
 MIDI_DIR=ROOT/"midi_generados"
-ENGINE=ROOT/"midi_engine.py"
-TEMPO_ENGINE=ROOT/"tempo_precision.py"
-CHORD_ENGINE=ROOT/"chord_detector.py"
-PYTHON=ROOT/"entorno_ia"/"bin"/"python"
+ENGINE=worker_script(__file__,"midi_engine.py")
+TEMPO_ENGINE=worker_script(__file__,"tempo_precision.py")
+CHORD_ENGINE=worker_script(__file__,"chord_detector.py")
+PYTHON=ia_python(__file__)
 PREFERENCES=ROOT/"preferencias_midi.json"
 
 

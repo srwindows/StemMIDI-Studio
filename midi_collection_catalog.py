@@ -3,7 +3,7 @@
 - Escribe ÚNICAMENTE bajo datos_entrenamiento/catalogo_canciones.
 - Nunca modifica la fuente coleccion MIDI elegida por el usuario.
 - No almacena letras karaoke, datos de SysEx ni mensajes completos.
-- Parecidos a estilos Roland = similitud de batería, NO etiqueta de género.
+- Parecidos a estilos General MIDI = similitud de batería, NO etiqueta de género.
 - Contenido ZIP se enumera sin extraer ni ejecutar ficheros.
 """
 from __future__ import annotations
@@ -181,7 +181,7 @@ def main():
     OUT.mkdir(parents=True,exist_ok=True)
     conn=_db(OUT/'catalogo.sqlite3')
     refs=_ref_styles()
-    print('ROLAND_RHYTHM_PROFILES',len(refs),flush=True)
+    print('GM_RHYTHM_PROFILES',len(refs),flush=True)
     files=sorted((p for p in SOURCE.rglob('*') if
                   p.is_file() and p.suffix.lower() in SUFFIX),
                  key=lambda p:str(p))
@@ -246,7 +246,7 @@ def main():
     report['with_pedal']=conn.execute('SELECT COUNT(*) FROM canciones WHERE has_cc64=1').fetchone()[0]
     report['with_lyrics']=conn.execute('SELECT COUNT(*) FROM canciones WHERE has_lyrics=1').fetchone()[0]
     report['4_4_meter']=conn.execute('SELECT COUNT(*) FROM canciones WHERE numerator=4 and denominator=4').fetchone()[0]
-    report['top_roland_similar']=[dict(name=n,count=c,avg_similarity=round(v,3))
+    report['top_gm_similar']=[dict(name=n,count=c,avg_similarity=round(v,3))
         for n,c,v in conn.execute('''SELECT approximate_style,COUNT(*),
           AVG(similarity) FROM canciones WHERE similarity>=0.5
           AND approximate_style!='' GROUP BY approximate_style

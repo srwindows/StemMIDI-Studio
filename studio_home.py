@@ -1822,7 +1822,17 @@ class StudioHome(QWidget):
         form.addLayout(quality_row)
         # Los selectores van DEBAJO del transporte compacto, a su
         # izquierda, no debajo del analizador a ancho completo.
-        self.monitor_left_controls.addLayout(form)
+        # El formato y la calidad conservan sus valores y señales reales,
+        # pero solo ocupan altura al desbloquear el Monitor. Dos combos
+        # apilados dentro de 318 px forzaban a Qt a solapar REC y ganancia.
+        self.monitor_format_panel=QWidget()
+        self.monitor_format_panel.setObjectName("monitorFormatPanel")
+        format_host=QVBoxLayout(self.monitor_format_panel)
+        format_host.setContentsMargins(0,0,0,0)
+        format_host.setSpacing(0)
+        format_host.addLayout(form)
+        self.monitor_left_controls.addWidget(self.monitor_format_panel)
+        self.monitor_format_panel.hide()
         self.monitor_left_controls.addStretch(1)
         control_row=QHBoxLayout()
         control_row.setSpacing(7)
@@ -1910,6 +1920,9 @@ class StudioHome(QWidget):
             "compresor, limitador y normalización. Procesa copias después "
             "de grabar, automáticamente o bajo demanda, sin alterar originales.")
         left.addWidget(self.audio_lab_button)
+        # El laboratorio sigue operativo en la pestaña Monitor y en la
+        # tarjeta desbloqueada; no aplastar el transporte compacto.
+        self.audio_lab_button.hide()
         self.monitor_state=label("Supervisión detenida",muted=True)
         left.addWidget(self.monitor_state)
         columns.addLayout(left,1)
@@ -1966,6 +1979,18 @@ class StudioHome(QWidget):
     def populate_processed_listen_outputs(self):
         from capture_live_listen import available_sinks,is_feedback_route,default_sink
         source=self.main.sources.currentData() or ""
+        if source=="macos:system-audio":
+            # El sonido del sistema ya se escucha por la salida elegida.
+            # No consultar PortAudio: puede solicitar acceso al micrófono
+            # durante la inicialización incluso sin capturar nada.
+            old=self.listen_output.blockSignals(True)
+            self.listen_output.clear()
+            self.listen_output.blockSignals(old)
+            self.listen_processed.setChecked(False)
+            self.listen_processed.setEnabled(False)
+            self.listen_output.setEnabled(False)
+            self.capture_graph_status.setText("Escucha directa por la salida del Mac")
+            return
         current=self.listen_output.currentData() or default_sink()
         was=self.listen_output.blockSignals(True)
         self.listen_output.clear()
@@ -3075,15 +3100,31 @@ class StudioHome(QWidget):
 
     def select_source(self,index):
         ident=self.input.itemData(index)
-        if ident is None or self.main.worker is not None:return
+        # Un intento anterior fallido puede dejar un objeto QThread ya
+        # detenido. Bloquear cambios solo mientras captura de verdad.
+        if ident is None or (self.main.worker is not None and
+                             self.main.worker.isRunning()):return
         old=self.main.sources.blockSignals(True)
         actual=self.main.sources.findData(ident)
         if actual>=0:self.main.sources.setCurrentIndex(actual)
         self.main.sources.blockSignals(old)
+        if ident=="macos:system-audio":
+            self.main._auto_monitor_suppressed=False
+            QTimer.singleShot(130,self.main.auto_start_system_monitor)
+            self.listen_processed.setChecked(False)
+            self.listen_processed.setEnabled(False)
+            self.listen_processed.setToolTip(
+                "La música ya sale por el dispositivo elegido. Reenviarla a otra salida "
+                "crearía eco y realimentación al capturar audio del sistema.")
+        else:
+            self.listen_processed.setEnabled(True)
         if hasattr(self,"capture_analyzer_panel") and self.capture_analyzer_panel.isVisible():
             self.populate_processed_listen_outputs()
 
     def toggle_monitor(self,enabled):
+        # Si el usuario desmarca Monitorizar, respetar Stop y no reiniciar
+        # automáticamente al cambiar de pestaña o refrescar la interfaz.
+        self.main._auto_monitor_suppressed=not bool(enabled)
         active=self.main.worker is not None and self.main.worker.isRunning()
         if enabled and not active:self.main.start_monitor()
         if not enabled and active and not self.main.recording:
@@ -3094,11 +3135,21 @@ class StudioHome(QWidget):
         self._loading=True
         try:
             if self.input.count()!=self.main.sources.count():
+                # Al insertar la primera fila Qt selecciona índice 0.
+                # No propagar esa selección implícita: antes sustituía la
+                # fuente USB elegida expresamente por Audio del sistema.
+                was=self.input.blockSignals(True)
                 self.input.clear()
                 for i in range(self.main.sources.count()):
                     self.input.addItem(self.main.sources.itemText(i),
                                        self.main.sources.itemData(i))
+                self.input.blockSignals(was)
             self._link_combo(self.main.sources,self.input)
+            is_system=(self.main.sources.currentData()=="macos:system-audio")
+            if is_system and self.listen_processed.isChecked():
+                self.listen_processed.setChecked(False)
+            if not self.capture_analyzer_panel.isVisible():
+                self.listen_processed.setEnabled(not is_system)
             if self.format.count()!=self.main.format.count():
                 self.format.clear()
                 for i in range(self.main.format.count()):
@@ -3114,7 +3165,10 @@ class StudioHome(QWidget):
             self.monitor_check.blockSignals(checked)
             self.monitor_state.setText(
                 "● GRABANDO" if self.main.recording else
-                "● SUPERVISANDO" if active else "● Supervisión detenida")
+                "● SUPERVISANDO" if active else
+                "● Permiso macOS no reconocido" if is_system and
+                    getattr(self.main,"_system_audio_permission_denied",False) else
+                "● Supervisión detenida")
             self.record_btn.setText("● REC" if not self.main.recording else "● REC ON")
             self.pause_btn.setEnabled(bool(self.main.recording))
             self.stop_btn.setEnabled(active)
@@ -4182,6 +4236,12 @@ class StudioHome(QWidget):
     def _gather_files(self):
         work=self.workbench
         path_list=[]
+        # Incluir tomas de la sesión cuando el proyecto está en NTFS RO:
+        # el archivo se conserva en trabajos y sigue accesible en Resultados.
+        for p in getattr(self.main,"project_recordings",[]):
+            file=Path(p)
+            if file.is_file() and file.suffix.lower() in AUDIO:
+                path_list.append(file)
         for p in work.separation_storage.items:
             path=Path(p)
             if path.is_file():path_list.append(path)

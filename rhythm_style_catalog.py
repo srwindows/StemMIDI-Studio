@@ -1,7 +1,7 @@
-"""Análisis privado de patrones GM de batería Roland.
+"""Análisis privado de patrones General MIDI de batería.
 
 Solo extrae estadísticas agregadas de ataques y acentos. No copia,
-exporta ni incorpora los MIDI de Roland al ejecutable o al repositorio.
+exporta ni incorpora los MIDI privados al ejecutable o al repositorio.
 No infiere acordes o melodías de eventos de batería (canal MIDI 10).
 """
 from __future__ import annotations
@@ -143,9 +143,43 @@ def _scan(directory):
     return catalogue
 
 
+def _gm_profiles():
+    """Translate bundled, aggregated GM stats into composer groove descriptors.
+
+    No training MIDI, individual source events, or original audio is copied.
+    """
+    from genre_rhythm_trained import load as load_gm, weights as gm_weights
+    group_names={
+        "ballad":"Balada", "blues":"Blues", "country":"Country",
+        "fusion":"Fusión", "hard_rock":"Hard Rock",
+        "hiphop":"Hip-Hop", "house":"House", "jazz":"Jazz",
+        "metal":"Metal", "pop":"Pop", "rnb":"R&B",
+        "rock":"Rock", "techno":"Techno",
+    }
+    result={}
+    for key, data in load_gm().items():
+        weight=gm_weights(data)
+        velocity=data.get("velocity")
+        if not weight or len(weight)!=16 or len(velocity or ())!=16:
+            continue
+        name="General MIDI · "+group_names.get(key,key.title())
+        result[name]={
+            "kind":"gm_aggregate", "style_id":name,
+            "name":name, "source":"modelo estadístico integrado",
+            "weights":weight,
+            "accents":[max(0.,min(1.,float(v)/127.)) for v in velocity],
+            "density":max(1.,float(data.get("avg_notes_per_bar",8))),
+            "bar_profiles":[],
+        }
+    return result
+
+
 def available_styles():
-    """Profiles read-only, no external Roland data included in release."""
-    return _scan(str(_source()))
+    """Built-in statistical models are always available without external data."""
+    # Profiles from an optional private MIDI folder never replace the
+    # integrated models. Duplicate names retain the bundled models.
+    imported=_scan(str(_source()))
+    return {**imported, **_gm_profiles()}
 
 
 def profile(style):

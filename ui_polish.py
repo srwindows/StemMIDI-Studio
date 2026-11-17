@@ -41,7 +41,8 @@ class ComboPolisher(QObject):
             parent=parent.parentWidget()
         return False
     def apply_one(self,c):
-        if not c or not c.isWidgetType() or self._belongs_to_browser(c):return
+        if (not c or not c.isWidgetType() or self._belongs_to_browser(c)
+            or c.property('preserveComboWidth')):return
         try:
             metric=QFontMetrics(c.font())
             texts=[c.itemText(i) for i in range(min(c.count(),220))]

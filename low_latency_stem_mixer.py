@@ -6,6 +6,7 @@ NO se envían comandos de mute a un decodificador adelantado.
 """
 from __future__ import annotations
 import os
+import sys
 import queue
 import subprocess
 import threading
@@ -77,6 +78,8 @@ class LowLatencyStemMixer(QObject):
         self._last_output=[]
         self._gain_state=np.zeros(0,dtype=np.float32)
         self._volumes={}
+        self._master_volume=1.0
+        self._playback_speed=1.0
         self._fade=np.linspace(1/BLOCK,1,BLOCK,dtype=np.float32)
     @property
     def duration_ms(self):return self._duration_ms
@@ -88,7 +91,7 @@ class LowLatencyStemMixer(QObject):
     def paused(self):return self._paused
     def position(self):
         return min(self._duration_ms,self._start_ms+
-                   round(self._frames_played*1000/RATE))
+                   round(self._frames_played*1000*self._playback_speed/RATE))
 
     def _decode(self,proc,channels):
         size=BLOCK*channels*4
@@ -112,6 +115,9 @@ class LowLatencyStemMixer(QObject):
 
     def _callback(self,outdata,frames,timing,status):
         outdata.fill(0)
+        # CoreAudio/GM requiere 4 canales a 48 kHz; mezclar solo L/R.
+        # El resto queda a cero, sin alterar los VU ni las ganancias.
+        stereo=outdata[:,:2]
         if not self._running or self._paused:return
         try:chunk=self._queue.get_nowait()
         except queue.Empty:
@@ -135,28 +141,28 @@ class LowLatencyStemMixer(QObject):
                 # Importante: también en régimen ESTABLE aplicar las
                 # ganancias a cada pista. La suma sin target provocaba
                 # que cualquier fader mayor de cero sonase al 100 %.
-                outdata[:]=np.einsum(
+                stereo[:]=np.einsum(
                     "fsc,s->fc",chunk[:,mask,:],target[mask],optimize=False)
         else:
             # Fundido de 10,7 ms para evitar clics al marcar/desmarcar.
             fades=(previous[None,:]+self._fade[:,None]*(target-previous)[None,:])
-            outdata[:]=np.einsum('fsc,fs->fc',chunk,fades,optimize=False)
+            stereo[:]=np.einsum('fsc,fs->fc',chunk,fades,optimize=False)
             self._gain_state=target
         # Medición PRE-canal real, con la misma ganancia y mute que se
         # aplican al mezclador (ninguna barra inventada a partir del máster).
         measured=np.max(np.abs(chunk),axis=0)*target[:,None]
         self.track_peaks={name:(float(measured[i,0]),float(measured[i,1]))
                           for i,name in enumerate(names)}
-        # Compensación energética + limitador de picos sin hard clipping.
+        # Compensación energética + volumen MÁSTER (sin alterar los stems).
         active=max(1.,float(np.count_nonzero(target)))
-        outdata[:]/=np.sqrt(active)
-        peak=float(np.max(np.abs(outdata)))
-        if peak>.95:outdata[:]*=.95/peak
+        stereo[:]*=self._master_volume/np.sqrt(active)
+        peak=float(np.max(np.abs(stereo)))
+        if peak>.95:stereo[:]*=.95/peak
         self._frames_played+=frames
         self.blocks+=1
-        self.last_mix_level=float(np.max(np.abs(outdata)))
-        stereo=np.max(np.abs(outdata),axis=0)
-        self.master_peaks=(float(stereo[0]),float(stereo[1]))
+        self.last_mix_level=float(np.max(np.abs(stereo)))
+        peaks=np.max(np.abs(stereo),axis=0)
+        self.master_peaks=(float(peaks[0]),float(peaks[1]))
         if self._last_mask_applied_ns<self._last_mask_update_ns:
             self._last_mask_applied_ns=time.monotonic_ns()
 
@@ -166,11 +172,13 @@ class LowLatencyStemMixer(QObject):
         for file in self._files:
             if start_ms:cmd+=["-ss",f"{start_ms/1000:.3f}"]
             cmd+=["-i",str(file)]
-        remain=max(.1,(self._duration_ms-start_ms)/1000)
+        remain=max(.1,(self._duration_ms-start_ms)/1000/self._playback_speed)
         filters=[]
+        tempo=("" if abs(self._playback_speed-1.0)<.0001 else
+               f"atempo={self._playback_speed:.4f},")
         for i in range(n):
             filters.append(f"[{i}:a:0]aresample={RATE},"
-                           "aformat=channel_layouts=stereo,"
+                           "aformat=channel_layouts=stereo,"+tempo+
                            f"apad,atrim=duration={remain:.4f}[s{i}]")
         filters.append("".join(f"[s{i}]" for i in range(n))+
                        f"amerge=inputs={n}[out]")
@@ -213,22 +221,29 @@ class LowLatencyStemMixer(QObject):
                 target=self._decode,args=(self._decoder,len(self._names)*2),
                 name="StemMIDI-PCM-Salida",daemon=True)
             self._decode_thread.start()
-            # Abrir PulseAudio en el sink configurado por la aplicación.
-            # PortAudio/pulse mantiene la misma selección del sistema.
             selected_sink=AudioRoute.current_id()
-            old_sink=os.environ.get("PULSE_SINK")
-            if selected_sink:os.environ["PULSE_SINK"]=selected_sink
-            try:
-                if os.environ.get("STEMMIDI_TEST_DUMMY_AUDIO")=="1":
-                    self._stream=_DummyStream(self._callback)
-                else:
+            if os.environ.get("STEMMIDI_TEST_DUMMY_AUDIO")=="1":
+                self._stream=_DummyStream(self._callback)
+            elif sys.platform in ("darwin","win32"):
+                from native_listen import resolve_qt_output
+                index,channels=resolve_qt_output(selected_sink,RATE)
+                self._stream=sd.OutputStream(
+                    samplerate=RATE,channels=channels,dtype="float32",
+                    blocksize=BLOCK,latency="low",device=index,
+                    callback=self._callback)
+            else:
+                # PulseAudio es una API Linux, nunca forzar device="pulse"
+                # en CoreAudio ni en WASAPI.
+                old_sink=os.environ.get("PULSE_SINK")
+                if selected_sink:os.environ["PULSE_SINK"]=selected_sink
+                try:
                     self._stream=sd.OutputStream(
                         samplerate=RATE,channels=2,dtype="float32",
                         blocksize=BLOCK,latency="low",device="pulse",
                         callback=self._callback)
-            finally:
-                if old_sink is None:os.environ.pop("PULSE_SINK",None)
-                else:os.environ["PULSE_SINK"]=old_sink
+                finally:
+                    if old_sink is None:os.environ.pop("PULSE_SINK",None)
+                    else:os.environ["PULSE_SINK"]=old_sink
             # Solo se acumulan ~128 ms de PCM SIN MEZCLAR.
             # El mute responde al siguiente bloque de 10.7 ms.
             self._running=True
@@ -239,6 +254,24 @@ class LowLatencyStemMixer(QObject):
             self.error.emit("No se pudo abrir la salida multipista: "+str(exc))
             self.stop()
             return False
+
+    def set_master_volume(self,value):
+        """Ganancia maestra real en el callback de salida PCM."""
+        self._master_volume=max(0.,min(1.5,float(value)))
+
+    def set_speed(self,value):
+        """Tempo de escucha real FFmpeg, sin modificar archivos."""
+        value=max(.5,min(2.,float(value)))
+        if abs(value-self._playback_speed)<.0001:return
+        old_position=self.position() if self._running else 0
+        tracks=list(zip(self._names,self._files))
+        selected=set(self._selected)
+        was_paused=self._paused
+        self._playback_speed=value
+        if self._running and tracks:
+            if self.start(tracks,selected,start_ms=old_position,
+                          duration_ms=self._duration_ms) and was_paused:
+                self.pause()
 
     def set_track_levels(self,levels):
         """Reutilizar los faders globales sin reiniciar la reproducción."""
