@@ -1,7 +1,7 @@
 """Captura nativa del audio de macOS y entradas USB.
 
 En Sonoma, ScreenCaptureKit puede leer el audio del sistema, incluido el
-sonido de YouTube enviado a Roland FANTOM, sin usar el bus de entrada del
+sonido de YouTube enviado a interfaz de audio USB, sin usar el bus de entrada del
 instrumento. No altera la salida predeterminada del Mac.
 """
 from __future__ import annotations

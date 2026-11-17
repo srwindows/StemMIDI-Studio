@@ -288,13 +288,13 @@ class PianoRollExpanded(QWidget):
         self.progression.setToolTip(
             "Progresión base cuando se empieza de cero.")
         self.seventh=QCheckBox("7ª")
-        # Perfiles originales portables + huellas Roland opcionales.
-        # La colección Roland nunca sustituye ni es requisito de rock,
+        # Perfiles originales portables + perfiles rítmicos locales opcionales.
+        # La colección local nunca sustituye ni es requisito de rock,
         # salsa, cumbia, 8 beat y los demás estilos del generador.
         from rhythm_style_catalog import available_styles
         from composition_style_library import grouped_style_names
         self.rhythm_style=QComboBox(self)
-        self.rhythm_style.setObjectName("compositionRolandRhythmStyle")
+        self.rhythm_style.setObjectName("compositionLocalRhythmStyle")
         self.rhythm_style.addItem("Sin patrón",None)
         def heading(title):
             self.rhythm_style.addItem("── "+title+" ──",None)
@@ -306,22 +306,22 @@ class PianoRollExpanded(QWidget):
                 self.rhythm_style.addItem(label,code)
         available=available_styles()
         if available:
-            heading("Roland FANTOM · ritmos originales")
-            for alias,source in (("Balada romántica · Roland","balada _1"),
-                                 ("Balada pop · Roland","balada _2")):
+            heading("Colección local · ritmos importados")
+            for alias,source in (("Balada romántica · biblioteca local","balada _1"),
+                                 ("Balada pop · biblioteca local","balada _2")):
                 if source in available:self.rhythm_style.addItem(alias,source)
             for name in sorted(available,key=str.casefold):
                 label=name.replace("_"," ").strip()
                 if label.lower().startswith("rock"):
-                    label="Rock · Roland ("+label+")"
+                    label="Rock · biblioteca local ("+label+")"
                 elif label.lower().startswith("hard rock"):
-                    label="Hard rock · Roland ("+label+")"
+                    label="Hard rock · biblioteca local ("+label+")"
                 self.rhythm_style.addItem(label,name)
         self.rhythm_style.setMaxVisibleItems(20)
         self.rhythm_style.setToolTip(
             "72 estilos musicales originales del compositor organizados"
             " por familia (siempre disponibles), más los 59 ritmos"
-            " Roland FANTOM privados cuando está conectado el disco."
+            " privados de la biblioteca local cuando está conectado el disco."
             " Cambian ataques, acentos y síncopa de acordes y melodía;"
             " no son pistas completas de batería ni audio de acompañamiento.")
         row.addWidget(self.progression,1)

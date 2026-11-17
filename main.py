@@ -575,7 +575,7 @@ class MonitorWindow(QMainWindow):
             self.sources.setCurrentIndex(idx)
         if sys.platform=="darwin":
             message=(f"{len(sources)} fuentes CoreAudio disponibles. "
-                     "Para YouTube y la salida Roland, selecciona "
+                     "Para audio del sistema, selecciona "
                      "Audio del sistema; para voz o instrumentos, "
                      "selecciona una entrada física.")
         else:

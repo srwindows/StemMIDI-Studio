@@ -53,7 +53,7 @@ modelo opcional de aprendizaje sobre datos declarados CC0, en
 composition_learned_model.json.
 
 **No se distribuyen** los mas de 20.000 ficheros MIDI/KAR particulares
-usados para el aprendizaje, ni ninguna de las 59 bases ritmicas Roland.
+usados para el aprendizaje, ni ninguna de las 59 bases rítmicas originales.
 Tampoco grabaciones, proyectos ni configuraciones personales.
 
 Ver la [ficha tecnica y procedencia del modelo](docs/MODELO_MUSICAL.md).
@@ -73,7 +73,7 @@ software open source OSI**, y restringe el uso comercial. Las aportaciones
 de terceros, los modelos externos y los datos CC0 mantienen sus condiciones
 propias. Si se decide pasar a MIT/GPL, sera una decision de licencia separada.
 
-No se conceden derechos sobre las canciones ni los ritmos Roland originales
+No se conceden derechos sobre las canciones ni los ritmos privados originales
 que no forman parte de esta distribucion.
 
 ## Notas de seguridad
@@ -119,3 +119,14 @@ El empaquetado público macOS utiliza `StemMIDIStudio-macOS.spec` con
 `STEMMIDI_MAC_BUNDLE_ALL_MODELS=0` (valor predeterminado). La opción
 `=1` se reserva exclusivamente a pruebas locales con modelos que se tengan
 instalados: no debe utilizarse para generar una publicación pública.
+
+### Modelos propios integrados en macOS 2.0
+La aplicación incluye de serie cuatro modelos estadísticos propios:
+composition_learned_model.json,
+modelos_publicos/multinstrumental_markov_v1.json,
+stemmidi_drum_ai_trained_v1.json (944 perfiles anónimos),
+genre_rhythm_trained_gm_v1.json (13 grupos rítmicos agregados).
+
+No hace falta descargarlos ni instalarlos por separado. El asistente del primer
+arranque se reserva para elegir las 11 IA externas disponibles y sus tamaños.
+Los MIDI originales, patrones privados y pesos externos no forman parte del paquete.

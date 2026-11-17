@@ -1,7 +1,7 @@
 """Catálogo de estilos rítmicos ORIGINALES del generador StemMIDI.
 
 No son grabaciones ni modelos aprendidos de artistas. Son plantillas
-originales de ataques, síncopa y acentos, reutilizables sin disco Roland.
+originales de ataques, síncopa y acentos, reutilizables sin disco externo.
 16 posiciones normalizadas por compás; patrones A/B y vuelta de frase.
 Su propósito es condicionar acordes y melodía, NO generar batería/audio.
 """
