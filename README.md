@@ -91,3 +91,6 @@ una compilacion Windows .exe ni un instalador macOS .dmg verificados.
   no falle durante el arranque por una dependencia ausente.
 - No se distribuyen MIDI/KAR ni audio privado de entrenamiento, ni los
   pesos externos de otros desarrolladores.
+
+### Compilación de Debian 1.1.1
+Se requiere PyInstaller y SciPy 1.16.3 (compatible con NumPy 2.5). Para compilar con SciPy en un entorno independiente, definir `STEMMIDI_SCIPY_VENDOR` con la carpeta donde está instalado SciPy, añadir la misma carpeta a `PYTHONPATH` y compilar `MonitorDeGrabacion.spec`. Se incluyen los cuatro modelos propios sin descarga; los modelos de terceros siguen siendo opcionales.

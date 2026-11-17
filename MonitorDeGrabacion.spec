@@ -1,9 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
 from pathlib import Path
+import os
 ROOT=Path(SPECPATH).resolve()
 a = Analysis(
     [str(ROOT/'main.py')],
-    pathex=[str(ROOT)],
+    pathex=[str(ROOT)] + ([os.environ["STEMMIDI_SCIPY_VENDOR"]] if os.environ.get("STEMMIDI_SCIPY_VENDOR") else []),
     binaries=[],
     datas=[
         (str(ROOT/'assets'),'assets'),
