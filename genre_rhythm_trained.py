@@ -6,21 +6,26 @@ ni un modelo de melodía/acordes condicionado por etiquetas verificadas.
 """
 from functools import lru_cache
 import json
+from pathlib import Path
 from studio_paths import resource_root
 
 _FILENAME="genre_rhythm_trained_gm_v1.json"
 
 @lru_cache(maxsize=1)
 def load():
-    try:
-        data=json.loads((resource_root(__file__)/_FILENAME).read_text(encoding="utf8"))
-    except (OSError,ValueError,TypeError):
-        return {}
-    if (data.get("type")!="stemmidi_aggregated_gm_genre_rhythm_v1"
-         or data.get("notes_or_events_embedded") is not False
-         or data.get("source_files_analyzed",0)<50):
-        return {}
-    return data.get("genres",{})
+    # El proceso congelado usa resource_root; Python-IA ejecuta workers
+    # desde Resources/workers y necesita resolver el directorio superior.
+    roots=(resource_root(__file__),Path(__file__).resolve().parent.parent)
+    for root in roots:
+        try:
+            data=json.loads((root/_FILENAME).read_text(encoding="utf8"))
+        except (OSError,ValueError,TypeError):
+            continue
+        if (data.get("type")=="stemmidi_aggregated_gm_genre_rhythm_v1"
+              and data.get("notes_or_events_embedded") is False
+              and data.get("source_files_analyzed",0)>=50):
+            return data.get("genres",{})
+    return {}
 
 def profile_for_label(label,family):
     """Asociación explícita entre etiqueta visible y ritmo agregado disponible."""
